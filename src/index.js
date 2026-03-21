@@ -1,6 +1,5 @@
 // src/index.js
 // Entry point del motor SIFEN
-// Levanta el servidor Fastify con todos los plugins y rutas
 
 import Fastify from 'fastify'
 import rateLimit from '@fastify/rate-limit'
@@ -10,7 +9,6 @@ import { documentosRoutes } from './modules/documentos/routes.js'
 import { tenantsRoutes } from './modules/tenants/routes.js'
 import { getDb, closeDb } from './db/connection.js'
 
-// ── Crear instancia de Fastify ────────────────────────────────────────────────
 const fastify = Fastify({
   logger: {
     level: config.log.level,
@@ -18,29 +16,21 @@ const fastify = Fastify({
       ? { target: 'pino-pretty', options: { colorize: true, translateTime: 'HH:MM:ss' } }
       : undefined,
   },
-  // Parsea body JSON automáticamente
-  bodyLimit: 1048576, // 1MB
+  bodyLimit: 1048576,
 })
 
-// ── Plugins ───────────────────────────────────────────────────────────────────
-
-// Rate limiting global
+// ── Rate limiting global ──────────────────────────────────────────────────────
 await fastify.register(rateLimit, {
   max: config.rateLimit.max,
   timeWindow: config.rateLimit.windowMs,
-  keyGenerator: (request) =>
-    // Limitar por tenant si está autenticado, sino por IP
-    request.tenant?.id || request.ip,
+  keyGenerator: (request) => request.tenant?.id || request.ip,
   errorResponseBuilder: () => ({
     error: 'Rate limit excedido',
     mensaje: `Máximo ${config.rateLimit.max} requests por minuto`
   })
 })
 
-// Auth middleware
-await fastify.register(authPlugin)
-
-// ── Rutas ─────────────────────────────────────────────────────────────────────
+// ── Ruta pública health ───────────────────────────────────────────────────────
 fastify.get('/health', async () => ({
   ok: true,
   version: '0.1.0',
@@ -48,24 +38,28 @@ fastify.get('/health', async () => ({
   timestamp: new Date().toISOString(),
 }))
 
-// Documentos electrónicos (requiere auth)
-await fastify.register(documentosRoutes, { prefix: '/api/v1/documentos' })
-
-// Gestión de tenants (proteger con admin token en producción)
+// ── Tenants (público — sin auth) ──────────────────────────────────────────────
 await fastify.register(tenantsRoutes, { prefix: '/api/v1/tenants' })
 
-// ── Manejo de errores global ───────────────────────────────────────────────────
+// ── Rutas protegidas con auth ─────────────────────────────────────────────────
+// Registramos auth + rutas protegidas en un scope encapsulado
+await fastify.register(async (protectedApp) => {
+  // Auth hook aplica a todo este scope
+  await protectedApp.register(authPlugin)
+
+  // Rutas que requieren autenticación
+  await protectedApp.register(documentosRoutes, { prefix: '/api/v1/documentos' })
+})
+
+// ── Manejo de errores global ──────────────────────────────────────────────────
 fastify.setErrorHandler((error, request, reply) => {
   request.log.error(error)
-
-  // Errores de validación de Fastify
   if (error.validation) {
     return reply.status(400).send({
       error: 'Datos inválidos',
       detalles: error.validation,
     })
   }
-
   return reply.status(error.statusCode || 500).send({
     error: error.message || 'Error interno del servidor',
   })
@@ -74,13 +68,9 @@ fastify.setErrorHandler((error, request, reply) => {
 // ── Arranque ──────────────────────────────────────────────────────────────────
 async function start() {
   try {
+    fastify.log.info(`DATABASE_URL cargada: ${process.env.DATABASE_URL ? 'SÍ ✓' : 'NO ✗'}`)
+    fastify.log.info(`Conectando a: ${config.databaseUrl.split('@')[1]}`)
 
-     // ⚠️ AGREGADO: log de diagnóstico para verificar variables en Railway
-    fastify.log.info(`DATABASE_URL cargada: ${process.env.DATABASE_URL ? 'SÍ ✓' : 'NO ✗ — FALTA LA VARIABLE'}`)
-    fastify.log.info(`Conectando a: ${config.databaseUrl.split('@')[1]}`) // muestra host sin password
-
-
-    // Verificar conexión a BD
     const sql = getDb()
     await sql`SELECT 1`
     fastify.log.info('✓ Conexión a PostgreSQL OK')
@@ -92,11 +82,8 @@ async function start() {
     fastify.log.error(err)
     process.exit(1)
   }
-
-
 }
 
-// ── Shutdown graceful ─────────────────────────────────────────────────────────
 const shutdown = async (signal) => {
   fastify.log.info(`Señal ${signal} recibida, cerrando...`)
   await fastify.close()
