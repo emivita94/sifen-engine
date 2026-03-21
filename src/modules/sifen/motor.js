@@ -24,6 +24,13 @@ async function cargarLibrerias() {
     _xmlsign = modXmlsign.default?.default || modXmlsign.default || modXmlsign
     _setapi  = modSetapi.default?.default  || modSetapi.default  || modSetapi
 
+console.log('PAYLOAD XMLGEN:', JSON.stringify({
+  tipoDocumento: payload.tipoDocumento,
+  tipoTransaccion: payload.tipoTransaccion,
+  receptor: payload.receptor,
+  items: payload.items?.length,
+}))
+
     // Verificar que los métodos existen
     if (typeof _xmlgen.generateXMLDE !== 'function') {
       // Intentar buscar en las keys del objeto
