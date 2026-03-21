@@ -103,10 +103,10 @@ export async function procesarDocumento(tenantId, payload) {
       numeroCasa:              '0',
       departamento:            depCodigo,
       departamentoDescripcion: depCodigo === 11 ? 'CAPITAL' : 'PARAGUAY',
-      distrito:                143,   // Asunción distrito 143
-      distritoDescripcion:     'ASUNCION',
-      ciudad:                  1,
-      ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION',
+     distrito:                143,
+distritoDescripcion:     'ASUNCION',
+ciudad:                  3344,
+ciudadDescripcion:       'ASUNCION (DISTRITO)',
       telefono:                '021000000',  // mínimo 6 chars requerido
       email:                   '',
       denominacion:            'Casa Central',
