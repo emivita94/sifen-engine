@@ -58,8 +58,7 @@ export function generarCDC({
   // Construye los 43 caracteres base
   const base = [
     tipoDE.toString().padStart(2, '0'),             // [2] iTipDE
-    rucEmisor.padStart(7, '0'),                     // [8] dRucEm
-    dvEmisor.toString(),                             // [1] dDVEm
+   (rucEmisor + dvEmisor.toString()).padStart(8, '0'),  // [8] dRucEm+DV
     establecimiento.toString().padStart(3, '0'),     // [3] dEstab
     puntoExpedicion.toString().padStart(3, '0'),     // [3] dPunExp
     numero.toString().padStart(7, '0'),              // [7] dNumDoc
