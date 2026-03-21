@@ -15,11 +15,11 @@ export async function authPlugin(fastify) {
     const PUBLICAS = [
       '/health',
       '/docs',
-      '/tenants',          // crear tenant es público (proteger con secret de admin en prod)
+      '/api/v1/tenants',
     ]
 
     // Si la ruta empieza con alguna pública, skip
-    if (PUBLICAS.some(p => request.url === p || request.url.startsWith(p + '?'))) {
+    if (PUBLICAS.some(p => request.url === p || request.url.startsWith(p + '/') || request.url.startsWith(p + '?'))) {
       return
     }
 
@@ -53,10 +53,19 @@ async function authenticate(request, reply) {
   const hash = hashApiKey(key)
 
   const [apiKey] = await sql`
-    SELECT ak.id, ak.tenant_id, ak.activa, ak.expira_en,
-           t.id as tid, t.nombre, t.ruc, t.razon_social,
-           t.ambiente, t.activo as tenant_activo,
-           t.certificado_enc, t.cert_alias, t.codigo_seguridad
+    SELECT
+      ak.id,
+      ak.tenant_id,
+      ak.activa,
+      ak.expira_en,
+      t.nombre,
+      t.ruc,
+      t.razon_social,
+      t.ambiente,
+      t.activo       AS tenant_activo,
+      t.certificado_enc,
+      t.cert_alias,
+      t.codigo_seguridad
     FROM api_keys ak
     JOIN tenants t ON t.id = ak.tenant_id
     WHERE ak.key_hash = ${hash}
@@ -80,14 +89,14 @@ async function authenticate(request, reply) {
 
   // Inyectar tenant en el request para que los handlers lo usen
   request.tenant = {
-    id:               apiKey.tid,
-    nombre:           apiKey.nombre,
-    ruc:              apiKey.ruc,
-    razonSocial:      apiKey.razonSocial,
-    ambiente:         apiKey.ambiente,
-    certificadoEnc:   apiKey.certificadoEnc,
-    certAlias:        apiKey.certAlias,
-    codigoSeguridad:  apiKey.codigoSeguridad,
+    id:              apiKey.tenantId,
+    nombre:          apiKey.nombre,
+    ruc:             apiKey.ruc,
+    razonSocial:     apiKey.razonSocial,
+    ambiente:        apiKey.ambiente,
+    certificadoEnc:  apiKey.certificadoEnc,
+    certAlias:       apiKey.certAlias,
+    codigoSeguridad: apiKey.codigoSeguridad,
   }
 
   // Actualizar último uso (sin await para no bloquear el request)
