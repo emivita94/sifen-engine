@@ -28,12 +28,8 @@ export async function procesarDocumento(tenantId, payload) {
 
   // ── 1. Tenant ───────────────────────────────────────────────────────────────
   const [tenant] = await sql`
-    SELECT id, ruc, razon_social, nombre_fantasia, tipo_contribuyente, tipo_regimen,
-           ambiente, certificado_enc, cert_alias, codigo_seguridad,
-           direccion, telefono, email,
-           ciudad_codigo, ciudad_nombre, departamento_codigo, departamento_nombre,
-           distrito_codigo, distrito_nombre
-    FROM tenants WHERE id = ${tenantId} AND activo = true
+    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias, codigo_seguridad
+  FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)               return respuestaError('Tenant no encontrado o inactivo')
   if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
@@ -92,29 +88,29 @@ export async function procesarDocumento(tenantId, payload) {
     : new Date().toISOString().split('T')[0]
 
   const params = {
-    version:           150,
-    ruc:               tenant.ruc,
-    razonSocial:       tenant.razonSocial,
-    nombreFantasia:    tenant.nombreFantasia || tenant.razonSocial,
-    actividadesEconomicas: [{ codigo: '82999', descripcion: 'Servicios' }],
-    timbradoNumero:    timbrado.numeroTimbrado,
-    timbradoFecha,
-    tipoContribuyente: tenant.tipoContribuyente || 2,
-    tipoRegimen:       tenant.tipoRegimen || 8,
-    establecimientos: [{
-      codigo:                  estCodigo,
-      direccion:               timbrado.estDireccion || 'Paraguay',
-      numeroCasa:              '0',
-      departamento:            timbrado.departamentoCodigo || 11,
-      departamentoDescripcion: timbrado.departamentoNombre || 'CAPITAL',
-      distrito:                timbrado.distritoCodigo || 1,
-      distritoDescripcion:     timbrado.distritoNombre || 'ASUNCION',
-      ciudad:                  timbrado.ciudadCodigo || 1,
-      ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION',
-      telefono:                timbrado.estTelefono || tenant.telefono || '000',
-      email:                   timbrado.estEmail || tenant.email || '',
-      denominacion:            timbrado.estDenominacion || 'Casa Central',
-    }],
+     version:           150,
+  ruc:               tenant.ruc,
+  razonSocial:       tenant.razonSocial,
+  nombreFantasia:    tenant.razonSocial,
+  actividadesEconomicas: [{ codigo: '82999', descripcion: 'Servicios' }],
+  timbradoNumero:    timbrado.numeroTimbrado,
+  timbradoFecha,
+  tipoContribuyente: 2,
+  tipoRegimen:       8,
+  establecimientos: [{
+    codigo:                  estCodigo,
+    direccion:               timbrado.estDireccion || 'Paraguay',
+    numeroCasa:              '0',
+    departamento:            11,
+    departamentoDescripcion: 'CAPITAL',
+    distrito:                1,
+    distritoDescripcion:     'ASUNCION',
+    ciudad:                  1,
+    ciudadDescripcion:       'ASUNCION',
+    telefono:                '000',
+    email:                   '',
+    denominacion:            'Casa Central',
+  }],
   }
 
   // ── 6. Construir data (datos variables del documento) ───────────────────────
