@@ -99,8 +99,7 @@ export async function procesarDocumento(tenantId, payload) {
 
   const xmlgenPayload = {
   ...payload,
-  iTipDE:                   tipoDoc,        // ← nombre correcto
-  tipoDocumento:            tipoDoc,        // mantener por si acaso
+  iTipDE:                   tipoDoc,          // ← nombre técnico SIFEN
   cdc,
   timbrado:                 timbrado.numeroTimbrado,
   establecimiento:          estCodigo,
