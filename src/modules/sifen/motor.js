@@ -29,7 +29,7 @@ export async function procesarDocumento(tenantId, payload) {
   // ── 1. Tenant ───────────────────────────────────────────────────────────────
   const [tenant] = await sql`
     SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias, codigo_seguridad
-  FROM tenants WHERE id = ${tenantId} AND activo = true
+    FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)               return respuestaError('Tenant no encontrado o inactivo')
   if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
@@ -37,19 +37,19 @@ export async function procesarDocumento(tenantId, payload) {
   // ── 2. Timbrado activo ──────────────────────────────────────────────────────
   const tipoDoc = payload.tipoDocumento || 1
   const [timbrado] = await sql`
-  SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
-         e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
-         p.codigo AS punto_codigo
-  FROM timbrados t
-  JOIN establecimientos e ON e.id = t.establecimiento_id
-  JOIN puntos_expedicion p ON p.id = t.punto_id
-  WHERE t.tenant_id = ${tenantId}
-    AND t.tipo_documento = ${tipoDoc}
-    AND t.activo = true
-    AND t.vigencia_desde <= CURRENT_DATE
-    AND t.vigencia_hasta >= CURRENT_DATE
-    AND t.numero_actual <= t.numero_max
-  ORDER BY t.vigencia_hasta DESC LIMIT 1
+    SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
+           e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
+           p.codigo AS punto_codigo
+    FROM timbrados t
+    JOIN establecimientos e ON e.id = t.establecimiento_id
+    JOIN puntos_expedicion p ON p.id = t.punto_id
+    WHERE t.tenant_id = ${tenantId}
+      AND t.tipo_documento = ${tipoDoc}
+      AND t.activo = true
+      AND t.vigencia_desde <= CURRENT_DATE
+      AND t.vigencia_hasta >= CURRENT_DATE
+      AND t.numero_actual <= t.numero_max
+    ORDER BY t.vigencia_hasta DESC LIMIT 1
   `
   if (!timbrado) return respuestaError(`Sin timbrado activo para tipo de documento ${tipoDoc}`)
 
@@ -67,6 +67,7 @@ export async function procesarDocumento(tenantId, payload) {
   // ── 4. CDC ──────────────────────────────────────────────────────────────────
   const [rucBase, dvRuc] = tenant.ruc.split('-')
   const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date()
+
   const cdc = generarCDC({
     tipoDE:          tipoDoc,
     rucEmisor:       rucBase,
@@ -80,110 +81,128 @@ export async function procesarDocumento(tenantId, payload) {
     ambiente:        tenant.ambiente === 'prod' ? 1 : 2,
   })
 
-  // ── 5. Construir params (datos estáticos del emisor) ────────────────────────
-  const timbradoFecha = timbrado.vigenciaDesde
-    ? new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
-    : new Date().toISOString().split('T')[0]
+  // ── 5. Params (datos estáticos del emisor para xmlgen) ──────────────────────
+  const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
 
+  // Departamento y distrito compatibles — usamos Asunción (11/1/1) por defecto
+  // si no hay datos en el establecimiento
+  const depCodigo = timbrado.departamentoCodigo || 11
   const params = {
-     version:           150,
-  ruc:               tenant.ruc,
-  razonSocial:       tenant.razonSocial,
-  nombreFantasia:    tenant.razonSocial,
-  actividadesEconomicas: [{ codigo: '82999', descripcion: 'Servicios' }],
-  timbradoNumero:    timbrado.numeroTimbrado,
-  timbradoFecha,
-  tipoContribuyente: 2,
-  tipoRegimen:       8,
-  establecimientos: [{
-  codigo:                  estCodigo,
-  direccion:               timbrado.estDireccion || 'Paraguay',
-  numeroCasa:              '0',
-  departamento:            timbrado.departamentoCodigo || 11,
-  departamentoDescripcion: 'CAPITAL',
-  distrito:                1,
-  distritoDescripcion:     'ASUNCION',
-  ciudad:                  timbrado.ciudadCodigo || 1,
-  ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION',
-  telefono:                '000',
-  email:                   '',
-  denominacion:            'Casa Central',
-}],
+    version:           150,
+    ruc:               tenant.ruc,
+    razonSocial:       tenant.razonSocial,
+    nombreFantasia:    tenant.razonSocial,
+    actividadesEconomicas: [{ codigo: '82999', descripcion: 'Servicios' }],
+    timbradoNumero:    timbrado.numeroTimbrado,
+    timbradoFecha,
+    tipoContribuyente: 2,
+    tipoRegimen:       8,
+    establecimientos: [{
+      codigo:                  estCodigo,
+      direccion:               timbrado.estDireccion || 'Sin dirección',
+      numeroCasa:              '0',
+      departamento:            depCodigo,
+      departamentoDescripcion: depCodigo === 11 ? 'CAPITAL' : 'PARAGUAY',
+      distrito:                143,   // Asunción distrito 143
+      distritoDescripcion:     'ASUNCION',
+      ciudad:                  1,
+      ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION',
+      telefono:                '021000000',  // mínimo 6 chars requerido
+      email:                   '',
+      denominacion:            'Casa Central',
+    }],
   }
 
-  // ── 6. Construir data (datos variables del documento) ───────────────────────
+  // ── 6. Data (datos variables del documento para xmlgen) ─────────────────────
   const receptor = payload.receptor || {}
   const codigoSeguridad = (tenant.codigoSeguridad || '000000000').toString().padStart(9, '0').substring(0, 9)
 
-  // Mapear receptor al formato cliente de xmlgen
+  // Mapear receptor al formato "cliente" de xmlgen
+  // tipo 1=RUC, 2=CI, 3=Pasaporte, 4=Innominado
+  const esContribuyente = receptor.tipo === 1
+  const esInnominado    = receptor.tipo === 4 || !receptor.tipo
+
   const cliente = {
-    contribuyente:    receptor.tipo === 1,
-    ruc:              receptor.tipo === 1 ? receptor.documento : undefined,
-    documentoTipo:    receptor.tipo === 2 ? 1 : receptor.tipo === 3 ? 2 : undefined,
-    documentoNumero:  receptor.tipo !== 1 ? receptor.documento : undefined,
+    contribuyente:    esContribuyente,
+    ruc:              esContribuyente ? receptor.documento : undefined,
+    documentoTipo:    esInnominado ? 5 : // 5=Innominado
+                      receptor.tipo === 2 ? 1 :  // 1=CI
+                      receptor.tipo === 3 ? 2 :  // 2=Pasaporte
+                      undefined,
+    documentoNumero:  esInnominado ? '0' : (receptor.documento || '0'),
     razonSocial:      receptor.razonSocial || 'Sin Nombre',
     pais:             receptor.pais || 'PRY',
     paisDescripcion:  'Paraguay',
-    tipoContribuyente: receptor.tipo === 1 ? 1 : 2,
+    tipoContribuyente: esContribuyente ? 1 : 2,
+    tipoOperacion:    esContribuyente ? 1 : 2,  // 1=B2B, 2=B2C
     email:            receptor.email || '',
   }
 
   // Mapear items al formato de xmlgen
   const items = (payload.items || []).map((item, idx) => ({
-    codigo:                String(idx + 1),
-    descripcion:           item.descripcion,
-    unidadMedida:          77,  // 77 = Unidad
-    cantidad:              item.cantidad,
-    precioUnitario:        item.precioUnitario,
-    cambio:                0,
-    descuento:             0,
-    anticipo:              0,
-    porcDescuento:         0,
-    descuentoGlobalItem:   0,
-    anticipoGlobalItem:    0,
-    ivaTipo:               1,
-    ivaBase:               100,
-    iva:                   item.tasaIVA,
-    lote:                  '',
-    vencimiento:           '',
-    numeroSerie:           '',
-    numeroPedido:          '',
-    numeroSeguimiento:     '',
-    importacion:           {},
-    dncp:                  {},
-    pais:                  'PRY',
-    paisDescripcion:       'Paraguay',
-    tolerancia:            0,
-    toleranciaCantidad:    0,
-    toleranciaPorcentaje:  0,
-    cdcAnticipo:           '',
-    ...item,
+    codigo:           String(idx + 1),
+    descripcion:      item.descripcion,
+    unidadMedida:     77,
+    cantidad:         item.cantidad,
+    precioUnitario:   item.precioUnitario,
+    cambio:           0,
+    descuento:        0,
+    anticipo:         0,
+    porcDescuento:    0,
+    descuentoGlobalItem: 0,
+    anticipoGlobalItem:  0,
+    ivaTipo:          1,
+    ivaBase:          100,
+    iva:              item.tasaIVA,
+    lote:             '',
+    vencimiento:      '',
+    numeroSerie:      '',
+    numeroPedido:     '',
+    numeroSeguimiento: '',
+    importacion:      {},
+    dncp:             {},
+    pais:             'PRY',
+    paisDescripcion:  'Paraguay',
+    tolerancia:       0,
+    toleranciaCantidad:   0,
+    toleranciaPorcentaje: 0,
+    cdcAnticipo:      '',
   }))
 
+  // Condición de pago (requerida por xmlgen)
+  // 1=Contado, 2=Crédito
+  const condicion = {
+    tipo: 1,  // Contado
+    entregas: [{
+      tipo:   1,   // 1=Efectivo
+      monto:  String(calcularMontoTotal(payload)),
+      moneda: payload.moneda || 'PYG',
+      cambio: 0,
+    }],
+  }
+
   const data = {
-    tipoDocumento:          tipoDoc,
-    establecimiento:        estCodigo,
-    punto:                  puntoCodigo,
-    numero:                 numeroSecuencia.toString().padStart(7, '0'),
+    tipoDocumento:            tipoDoc,
+    establecimiento:          estCodigo,
+    punto:                    puntoCodigo,
+    numero:                   numeroSecuencia.toString().padStart(7, '0'),
     codigoSeguridadAleatorio: codigoSeguridad,
-    descripcion:            payload.descripcion || 'Factura',
-    observacion:            payload.observacion || '',
-    fecha: fechaEmision.toISOString().substring(0, 19),
-    tipoEmision:            1,
-    tipoTransaccion:        payload.tipoTransaccion || 1,
-    tipoImpuesto:           1,
-    moneda:                 payload.moneda || 'PYG',
-    condicionAnticipo:      1,
-    condicionTipoCambio:    1,
-    descuentoGlobal:        0,
-    anticipoGlobal:         0,
-    cambio:                 0,
+    descripcion:              payload.descripcion || 'Factura',
+    observacion:              payload.observacion || '',
+    fecha:                    fechaEmision.toISOString().substring(0, 19),
+    tipoEmision:              1,
+    tipoTransaccion:          payload.tipoTransaccion || 1,
+    tipoImpuesto:             1,
+    moneda:                   payload.moneda || 'PYG',
+    condicionAnticipo:        1,
+    condicionTipoCambio:      1,
+    descuentoGlobal:          0,
+    anticipoGlobal:           0,
+    cambio:                   0,
     cliente,
-    factura: {
-      presencia: 1,
-    },
+    factura: { presencia: 1 },
+    condicion,
     items,
-    ...(payload.extra || {}),
   }
 
   // ── 7. Generar XML ──────────────────────────────────────────────────────────
