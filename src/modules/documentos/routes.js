@@ -2,6 +2,7 @@
 import { procesarDocumento } from '../sifen/motor.js'
 import { getDb } from '../../db/connection.js'
 import { generarKude } from '../sifen/kude.js'
+import { hashApiKey } from '../../shared/crypto/index.js'
 import { z } from 'zod'
 
 const itemSchema = z.object({
@@ -31,67 +32,78 @@ const emitirSchema = z.object({
   webhookUrl:        z.string().url().optional(),
 }).passthrough()
 
+// ── Auth directo para este scope ──────────────────────────────────────────────
+async function autenticar(request, reply) {
+  const sql = getDb()
+  const authHeader = request.headers['x-api-key'] || request.headers['authorization']
+  if (!authHeader) {
+    return reply.status(401).send({ error: 'Sin autenticación. Incluí el header X-API-Key.' })
+  }
+  const key = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
+  if (!key.startsWith('sk_')) {
+    return reply.status(401).send({ error: 'Formato de API key inválido' })
+  }
+
+  const hash = hashApiKey(key)
+  const [row] = await sql`
+    SELECT
+      ak.id        AS key_id,
+      ak.tenant_id,
+      ak.activa,
+      ak.expira_en,
+      t.nombre,
+      t.ruc,
+      t.razon_social,
+      t.ambiente,
+      t.activo          AS tenant_activo,
+      t.certificado_enc,
+      t.cert_alias,
+      t.codigo_seguridad
+    FROM api_keys ak
+    JOIN tenants t ON t.id = ak.tenant_id
+    WHERE ak.key_hash = ${hash}
+  `
+
+  if (!row)              return reply.status(401).send({ error: 'API key inválido' })
+  if (!row.activa)       return reply.status(401).send({ error: 'API key desactivado' })
+  if (!row.tenantActivo) return reply.status(403).send({ error: 'Tenant inactivo' })
+
+  request.tenant = {
+    id:              row.tenantId,
+    nombre:          row.nombre,
+    ruc:             row.ruc,
+    razonSocial:     row.razonSocial,
+    ambiente:        row.ambiente,
+    certificadoEnc:  row.certificadoEnc,
+    certAlias:       row.certAlias,
+    codigoSeguridad: row.codigoSeguridad,
+  }
+
+  sql`UPDATE api_keys SET ultimo_uso = now() WHERE id = ${row.keyId}`.catch(() => {})
+}
+
 export async function documentosRoutes(fastify) {
 
-  // ─── POST /documentos ─────────────────────────────────────────────────────
-  fastify.post('/', {
-    schema: {
-      description: 'Emite un Documento Electrónico y lo envía a SIFEN',
-      tags: ['Documentos'],
-      security: [{ apiKey: [] }],
-    },
-  }, async (request, reply) => {
-    // ── DIAGNÓSTICO TEMPORAL ──
-    console.log('=== DIAGNÓSTICO POST /documentos ===')
-    console.log('TENANT:', JSON.stringify(request.tenant))
-    console.log('X-API-KEY HEADER:', request.headers['x-api-key'])
-    console.log('====================================')
+  // Auth en todas las rutas de este plugin
+  fastify.addHook('preHandler', autenticar)
 
+  // ─── POST /documentos ─────────────────────────────────────────────────────
+  fastify.post('/', async (request, reply) => {
     const parse = emitirSchema.safeParse(request.body)
     if (!parse.success) {
-      return reply.status(400).send({
-        error: 'Datos inválidos',
-        detalles: parse.error.flatten(),
-      })
+      return reply.status(400).send({ error: 'Datos inválidos', detalles: parse.error.flatten() })
     }
-
     try {
-      const resultado = await procesarDocumento(
-        request.tenant.id,
-        parse.data
-      )
-      return reply.status(resultado.aprobado ? 201 : 422).send({
-        ok: resultado.aprobado,
-        data: resultado,
-      })
+      const resultado = await procesarDocumento(request.tenant.id, parse.data)
+      return reply.status(resultado.aprobado ? 201 : 422).send({ ok: resultado.aprobado, data: resultado })
     } catch (err) {
       request.log.error(err)
-      return reply.status(500).send({
-        error: 'Error procesando documento',
-        mensaje: err.message,
-      })
+      return reply.status(500).send({ error: 'Error procesando documento', mensaje: err.message })
     }
   })
 
   // ─── GET /documentos ──────────────────────────────────────────────────────
-  fastify.get('/', {
-    schema: {
-      description: 'Lista DEs del tenant con filtros opcionales',
-      tags: ['Documentos'],
-      security: [{ apiKey: [] }],
-      querystring: {
-        type: 'object',
-        properties: {
-          estado:  { type: 'string', enum: ['pendiente','firmado','aprobado','rechazado','cancelado'] },
-          desde:   { type: 'string', format: 'date' },
-          hasta:   { type: 'string', format: 'date' },
-          limit:   { type: 'integer', minimum: 1, maximum: 100, default: 20 },
-          offset:  { type: 'integer', minimum: 0, default: 0 },
-          ref_ext: { type: 'string' },
-        }
-      }
-    }
-  }, async (request, reply) => {
+  fastify.get('/', async (request, reply) => {
     const sql = getDb()
     const { estado, desde, hasta, limit = 20, offset = 0, ref_ext } = request.query
 
@@ -109,34 +121,23 @@ export async function documentosRoutes(fastify) {
       ORDER BY creado_en DESC
       LIMIT ${limit} OFFSET ${offset}
     `
-
     const [{ total }] = await sql`
-      SELECT COUNT(*) AS total
-      FROM documentos
+      SELECT COUNT(*) AS total FROM documentos
       WHERE tenant_id = ${request.tenant.id}
         ${estado  ? sql`AND estado = ${estado}` : sql``}
         ${desde   ? sql`AND creado_en >= ${desde}::date` : sql``}
         ${hasta   ? sql`AND creado_en <= ${hasta}::date + interval '1 day'` : sql``}
         ${ref_ext ? sql`AND referencia_ext = ${ref_ext}` : sql``}
     `
-
     return { ok: true, data: docs, total: Number(total), limit, offset }
   })
 
   // ─── GET /documentos/:cdc ─────────────────────────────────────────────────
-  fastify.get('/:cdc', {
-    schema: {
-      description: 'Obtiene un DE por su CDC',
-      tags: ['Documentos'],
-      security: [{ apiKey: [] }],
-    }
-  }, async (request, reply) => {
+  fastify.get('/:cdc', async (request, reply) => {
     const sql = getDb()
-    const { cdc } = request.params
-
     const [doc] = await sql`
       SELECT * FROM documentos
-      WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}
+      WHERE cdc = ${request.params.cdc} AND tenant_id = ${request.tenant.id}
     `
     if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
     return { ok: true, data: doc }
@@ -146,13 +147,10 @@ export async function documentosRoutes(fastify) {
   fastify.get('/:cdc/xml', async (request, reply) => {
     const sql = getDb()
     const [doc] = await sql`
-      SELECT cdc, xml_firmado, xml_aprobado
-      FROM documentos
-      WHERE cdc = ${request.params.cdc}
-        AND tenant_id = ${request.tenant.id}
+      SELECT cdc, xml_firmado, xml_aprobado FROM documentos
+      WHERE cdc = ${request.params.cdc} AND tenant_id = ${request.tenant.id}
     `
     if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
-
     reply.header('Content-Type', 'application/xml')
     reply.header('Content-Disposition', `attachment; filename="${doc.cdc}.xml"`)
     return doc.xmlAprobado || doc.xmlFirmado
@@ -164,23 +162,16 @@ export async function documentosRoutes(fastify) {
     const { cdc } = request.params
     const formato = request.query.formato || 'a4'
 
-    const [doc] = await sql`
-      SELECT * FROM documentos
-      WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}
-    `
+    const [doc] = await sql`SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}`
     if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
 
-    const [tenant] = await sql`
-      SELECT ruc, razon_social, direccion, email, telefono
-      FROM tenants WHERE id = ${request.tenant.id}
-    `
+    const [tenant] = await sql`SELECT ruc, razon_social, direccion, email, telefono FROM tenants WHERE id = ${request.tenant.id}`
 
     let qrBase64 = null
     if (doc.estado === 'aprobado' && doc.cdc) {
       try {
         const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-        const urlConsulta = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${doc.cdc}`
-        qrBase64 = await qrgen.generateQR(urlConsulta, { type: 'image/png', quality: 0.92 })
+        qrBase64 = await qrgen.generateQR(`https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${doc.cdc}`, { type: 'image/png', quality: 0.92 })
       } catch (e) {}
     }
 
@@ -197,32 +188,15 @@ export async function documentosRoutes(fastify) {
   })
 
   // ─── POST /documentos/:cdc/cancelar ──────────────────────────────────────
-  fastify.post('/:cdc/cancelar', {
-    schema: {
-      body: {
-        type: 'object',
-        required: ['motivo'],
-        properties: {
-          motivo: { type: 'string', minLength: 5 }
-        }
-      }
-    }
-  }, async (request, reply) => {
+  fastify.post('/:cdc/cancelar', async (request, reply) => {
     const sql = getDb()
     const { cdc } = request.params
-    const { motivo } = request.body
 
-    const [doc] = await sql`
-      SELECT id, estado FROM documentos
-      WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}
-    `
+    const [doc] = await sql`SELECT id, estado FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}`
     if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
     if (doc.estado !== 'aprobado') {
-      return reply.status(400).send({
-        error: `No se puede cancelar un documento en estado: ${doc.estado}`
-      })
+      return reply.status(400).send({ error: `No se puede cancelar un documento en estado: ${doc.estado}` })
     }
-
     await sql`UPDATE documentos SET estado = 'cancelado' WHERE id = ${doc.id}`
     return { ok: true, mensaje: 'Cancelación enviada a SIFEN' }
   })
