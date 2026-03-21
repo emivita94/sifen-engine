@@ -80,7 +80,7 @@ async function authenticate(request, reply) {
 
   // Inyectar tenant en el request para que los handlers lo usen
   request.tenant = {
-    id:               apiKey.tenantId,
+    id:               apiKey.tid,
     nombre:           apiKey.nombre,
     ruc:              apiKey.ruc,
     razonSocial:      apiKey.razonSocial,
