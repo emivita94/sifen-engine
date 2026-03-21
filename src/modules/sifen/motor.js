@@ -168,7 +168,7 @@ export async function procesarDocumento(tenantId, payload) {
     codigoSeguridadAleatorio: codigoSeguridad,
     descripcion:            payload.descripcion || 'Factura',
     observacion:            payload.observacion || '',
-    fecha:                  fechaEmision.toISOString().replace('Z', ''),
+    fecha: fechaEmision.toISOString().substring(0, 19),
     tipoEmision:            1,
     tipoTransaccion:        payload.tipoTransaccion || 1,
     tipoImpuesto:           1,
