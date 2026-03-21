@@ -74,6 +74,12 @@ fastify.setErrorHandler((error, request, reply) => {
 // ── Arranque ──────────────────────────────────────────────────────────────────
 async function start() {
   try {
+
+     // ⚠️ AGREGADO: log de diagnóstico para verificar variables en Railway
+    fastify.log.info(`DATABASE_URL cargada: ${process.env.DATABASE_URL ? 'SÍ ✓' : 'NO ✗ — FALTA LA VARIABLE'}`)
+    fastify.log.info(`Conectando a: ${config.databaseUrl.split('@')[1]}`) // muestra host sin password
+
+
     // Verificar conexión a BD
     const sql = getDb()
     await sql`SELECT 1`
@@ -86,6 +92,8 @@ async function start() {
     fastify.log.error(err)
     process.exit(1)
   }
+
+
 }
 
 // ── Shutdown graceful ─────────────────────────────────────────────────────────

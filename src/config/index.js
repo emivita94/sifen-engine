@@ -1,4 +1,5 @@
 // src/config/index.js
+// src/config/index.js
 
 import 'dotenv/config'
 
@@ -13,7 +14,8 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isDev: (process.env.NODE_ENV || 'development') === 'development',
 
-  databaseUrl: process.env.DATABASE_URL || 'postgresql://postgres:password@localhost:5432/sifen_engine',
+  // ⚠️ CAMBIADO: required() en vez de fallback a localhost
+  databaseUrl: process.env.DATABASE_URL || (() => { throw new Error('DATABASE_URL es requerida') })(),
 
   db: {
     poolMin: parseInt(process.env.DB_POOL_MIN || '2'),
@@ -25,14 +27,11 @@ export const config = {
     expiresIn: process.env.JWT_EXPIRES_IN || '30d',
   },
 
-  // Clave para encriptar certificados PKCS#12 en la BD
-  // Debe ser 32 bytes hex (64 chars)
   certEncryptionKey: process.env.CERT_ENCRYPTION_KEY || 'dev_key_32bytes_insegura_cambiar_en_prod00',
 
   sifen: {
     ambiente: process.env.SIFEN_AMBIENTE || 'test',
     timeoutMs: parseInt(process.env.SIFEN_TIMEOUT_MS || '30000'),
-    // URLs de SIFEN por ambiente
     urls: {
       test: {
         recepcion: 'https://sifen-test.set.gov.py/de/ws/sync/recibe-lote',
