@@ -98,20 +98,21 @@ export async function procesarDocumento(tenantId, payload) {
   const codigoSeguridad = (tenant.codigoSeguridad || '000000000').toString().padStart(9, '0').substring(0, 9)
 
   const xmlgenPayload = {
-    ...payload,
-    tipoDocumento:            tipoDoc,
-    cdc,
-    timbrado:                 timbrado.numeroTimbrado,
-    establecimiento:          estCodigo,
-    punto:                    puntoCodigo,
-    numero:                   numeroSecuencia,
-    codigoSeguridadAleatorio: codigoSeguridad,
-    emisor: {
-      ruc:         tenant.ruc,
-      razonSocial: tenant.razonSocial,
-      ...(payload.emisor || {}),
-    },
-  }
+  ...payload,
+  iTipDE:                   tipoDoc,        // ← nombre correcto
+  tipoDocumento:            tipoDoc,        // mantener por si acaso
+  cdc,
+  timbrado:                 timbrado.numeroTimbrado,
+  establecimiento:          estCodigo,
+  punto:                    puntoCodigo,
+  numero:                   numeroSecuencia,
+  codigoSeguridadAleatorio: codigoSeguridad,
+  emisor: {
+    ruc:         tenant.ruc,
+    razonSocial: tenant.razonSocial,
+    ...(payload.emisor || {}),
+  },
+}
 
   // Log diagnóstico
   console.log('XMLGEN PAYLOAD tipoDocumento:', xmlgenPayload.tipoDocumento)
