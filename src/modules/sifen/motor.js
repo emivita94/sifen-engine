@@ -10,30 +10,13 @@ let _xmlgen, _xmlsign, _setapi
 
 async function cargarLibrerias() {
   if (_xmlgen) return
-
   try {
     const modXmlgen  = await import('facturacionelectronicapy-xmlgen')
     const modXmlsign = await import('facturacionelectronicapy-xmlsign')
     const modSetapi  = await import('facturacionelectronicapy-setapi')
-
     _xmlgen  = modXmlgen.default?.default  || modXmlgen.default  || modXmlgen
     _xmlsign = modXmlsign.default?.default || modXmlsign.default || modXmlsign
     _setapi  = modSetapi.default?.default  || modSetapi.default  || modSetapi
-
-    if (typeof _xmlgen.generateXMLDE !== 'function') {
-      if (typeof modXmlgen.generateXMLDE === 'function') {
-        _xmlgen = modXmlgen
-      } else {
-        throw new Error(`generateXMLDE no encontrado. Keys: ${Object.keys(_xmlgen).join(', ')}`)
-      }
-    }
-    if (typeof _xmlsign.signXML !== 'function') {
-      if (typeof modXmlsign.signXML === 'function') _xmlsign = modXmlsign
-    }
-    if (typeof _setapi.recibeLote !== 'function') {
-      if (typeof modSetapi.recibeLote === 'function') _setapi = modSetapi
-    }
-
   } catch (e) {
     throw new Error('Error cargando librerías SIFEN: ' + e.message)
   }
@@ -45,7 +28,11 @@ export async function procesarDocumento(tenantId, payload) {
 
   // ── 1. Tenant ───────────────────────────────────────────────────────────────
   const [tenant] = await sql`
-    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias, codigo_seguridad
+    SELECT id, ruc, razon_social, nombre_fantasia, tipo_contribuyente, tipo_regimen,
+           ambiente, certificado_enc, cert_alias, codigo_seguridad,
+           direccion, telefono, email,
+           ciudad_codigo, ciudad_nombre, departamento_codigo, departamento_nombre,
+           distrito_codigo, distrito_nombre
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)               return respuestaError('Tenant no encontrado o inactivo')
@@ -54,7 +41,11 @@ export async function procesarDocumento(tenantId, payload) {
   // ── 2. Timbrado activo ──────────────────────────────────────────────────────
   const tipoDoc = payload.tipoDocumento || 1
   const [timbrado] = await sql`
-    SELECT t.*, e.codigo AS est_codigo, p.codigo AS punto_codigo
+    SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
+           e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
+           e.departamento_nombre, e.distrito_codigo, e.telefono AS est_telefono,
+           e.email AS est_email, e.denominacion AS est_denominacion,
+           p.codigo AS punto_codigo
     FROM timbrados t
     JOIN establecimientos e ON e.id = t.establecimiento_id
     JOIN puntos_expedicion p ON p.id = t.punto_id
@@ -81,6 +72,7 @@ export async function procesarDocumento(tenantId, payload) {
 
   // ── 4. CDC ──────────────────────────────────────────────────────────────────
   const [rucBase, dvRuc] = tenant.ruc.split('-')
+  const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date()
   const cdc = generarCDC({
     tipoDE:          tipoDoc,
     rucEmisor:       rucBase,
@@ -90,46 +82,125 @@ export async function procesarDocumento(tenantId, payload) {
     numero:          numeroSecuencia,
     tipoTransaccion: payload.tipoTransaccion || 1,
     numeroTimbrado:  timbrado.numeroTimbrado,
-    fechaEmision:    payload.fecha ? new Date(payload.fecha) : new Date(),
+    fechaEmision,
     ambiente:        tenant.ambiente === 'prod' ? 1 : 2,
   })
 
-  // ── 5. Generar XML ──────────────────────────────────────────────────────────
+  // ── 5. Construir params (datos estáticos del emisor) ────────────────────────
+  const timbradoFecha = timbrado.vigenciaDesde
+    ? new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
+    : new Date().toISOString().split('T')[0]
+
+  const params = {
+    version:           150,
+    ruc:               tenant.ruc,
+    razonSocial:       tenant.razonSocial,
+    nombreFantasia:    tenant.nombreFantasia || tenant.razonSocial,
+    actividadesEconomicas: [{ codigo: '82999', descripcion: 'Servicios' }],
+    timbradoNumero:    timbrado.numeroTimbrado,
+    timbradoFecha,
+    tipoContribuyente: tenant.tipoContribuyente || 2,
+    tipoRegimen:       tenant.tipoRegimen || 8,
+    establecimientos: [{
+      codigo:                  estCodigo,
+      direccion:               timbrado.estDireccion || 'Paraguay',
+      numeroCasa:              '0',
+      departamento:            timbrado.departamentoCodigo || 11,
+      departamentoDescripcion: timbrado.departamentoNombre || 'CAPITAL',
+      distrito:                timbrado.distritoCodigo || 1,
+      distritoDescripcion:     timbrado.distritoNombre || 'ASUNCION',
+      ciudad:                  timbrado.ciudadCodigo || 1,
+      ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION',
+      telefono:                timbrado.estTelefono || tenant.telefono || '000',
+      email:                   timbrado.estEmail || tenant.email || '',
+      denominacion:            timbrado.estDenominacion || 'Casa Central',
+    }],
+  }
+
+  // ── 6. Construir data (datos variables del documento) ───────────────────────
+  const receptor = payload.receptor || {}
   const codigoSeguridad = (tenant.codigoSeguridad || '000000000').toString().padStart(9, '0').substring(0, 9)
 
-  const xmlgenPayload = {
-  ...payload,
-  iTipDE:                   tipoDoc,          // ← nombre técnico SIFEN
-  cdc,
-  timbrado:                 timbrado.numeroTimbrado,
-  establecimiento:          estCodigo,
-  punto:                    puntoCodigo,
-  numero:                   numeroSecuencia,
-  codigoSeguridadAleatorio: codigoSeguridad,
-  emisor: {
-    ruc:         tenant.ruc,
-    razonSocial: tenant.razonSocial,
-    ...(payload.emisor || {}),
-  },
-}
+  // Mapear receptor al formato cliente de xmlgen
+  const cliente = {
+    contribuyente:    receptor.tipo === 1,
+    ruc:              receptor.tipo === 1 ? receptor.documento : undefined,
+    documentoTipo:    receptor.tipo === 2 ? 1 : receptor.tipo === 3 ? 2 : undefined,
+    documentoNumero:  receptor.tipo !== 1 ? receptor.documento : undefined,
+    razonSocial:      receptor.razonSocial || 'Sin Nombre',
+    pais:             receptor.pais || 'PRY',
+    paisDescripcion:  'Paraguay',
+    tipoContribuyente: receptor.tipo === 1 ? 1 : 2,
+    email:            receptor.email || '',
+  }
 
-  // Log diagnóstico
-  console.log('XMLGEN PAYLOAD tipoDocumento:', xmlgenPayload.tipoDocumento)
-  console.log('XMLGEN PAYLOAD emisor:', JSON.stringify(xmlgenPayload.emisor))
-  console.log('XMLGEN PAYLOAD receptor:', JSON.stringify(xmlgenPayload.receptor))
-  console.log('XMLGEN PAYLOAD items count:', xmlgenPayload.items?.length)
+  // Mapear items al formato de xmlgen
+  const items = (payload.items || []).map((item, idx) => ({
+    codigo:                String(idx + 1),
+    descripcion:           item.descripcion,
+    unidadMedida:          77,  // 77 = Unidad
+    cantidad:              item.cantidad,
+    precioUnitario:        item.precioUnitario,
+    cambio:                0,
+    descuento:             0,
+    anticipo:              0,
+    porcDescuento:         0,
+    descuentoGlobalItem:   0,
+    anticipoGlobalItem:    0,
+    ivaTipo:               1,
+    ivaBase:               100,
+    iva:                   item.tasaIVA,
+    lote:                  '',
+    vencimiento:           '',
+    numeroSerie:           '',
+    numeroPedido:          '',
+    numeroSeguimiento:     '',
+    importacion:           {},
+    dncp:                  {},
+    pais:                  'PRY',
+    paisDescripcion:       'Paraguay',
+    tolerancia:            0,
+    toleranciaCantidad:    0,
+    toleranciaPorcentaje:  0,
+    cdcAnticipo:           '',
+    ...item,
+  }))
 
+  const data = {
+    tipoDocumento:          tipoDoc,
+    establecimiento:        estCodigo,
+    punto:                  puntoCodigo,
+    numero:                 numeroSecuencia.toString().padStart(7, '0'),
+    codigoSeguridadAleatorio: codigoSeguridad,
+    descripcion:            payload.descripcion || 'Factura',
+    observacion:            payload.observacion || '',
+    fecha:                  fechaEmision.toISOString().replace('Z', ''),
+    tipoEmision:            1,
+    tipoTransaccion:        payload.tipoTransaccion || 1,
+    tipoImpuesto:           1,
+    moneda:                 payload.moneda || 'PYG',
+    condicionAnticipo:      1,
+    condicionTipoCambio:    1,
+    descuentoGlobal:        0,
+    anticipoGlobal:         0,
+    cambio:                 0,
+    cliente,
+    factura: {
+      presencia: 1,
+    },
+    items,
+    ...(payload.extra || {}),
+  }
+
+  // ── 7. Generar XML ──────────────────────────────────────────────────────────
   let xmlGenerado
   try {
-    xmlGenerado = await _xmlgen.generateXMLDE(
-      xmlgenPayload,
-      { version: 150, fechaFirmaDigital: new Date().toISOString() }
-    )
+    xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
   } catch (err) {
     return respuestaError('Error generando XML del DE', err.message)
   }
 
-  // ── 6. Firmar XML ───────────────────────────────────────────────────────────
+  // ── 8. Firmar XML ───────────────────────────────────────────────────────────
   let xmlFirmado
   try {
     const certBuffer = desencriptar(tenant.certificadoEnc)
@@ -138,7 +209,7 @@ export async function procesarDocumento(tenantId, payload) {
     return respuestaError('Error firmando el XML con el certificado digital', err.message)
   }
 
-  // ── 7. Persistir estado "firmado" ───────────────────────────────────────────
+  // ── 9. Persistir estado "firmado" ───────────────────────────────────────────
   const montoTotal  = calcularMontoTotal(payload)
   const montoIva10  = calcularIVA10(payload)
   const montoIva5   = calcularIVA5(payload)
@@ -154,20 +225,20 @@ export async function procesarDocumento(tenantId, payload) {
     ) VALUES (
       ${tenantId}, ${timbrado.id}, ${cdc}, ${tipoDoc}, ${numeroFormateado}, ${numeroSecuencia},
       'firmado', ${JSON.stringify(payload)}, ${xmlGenerado}, ${xmlFirmado},
-      ${payload.receptor?.tipo        || null},
-      ${payload.receptor?.documento   || null},
-      ${payload.receptor?.razonSocial || null},
+      ${receptor.tipo        || null},
+      ${receptor.documento   || null},
+      ${receptor.razonSocial || null},
       ${montoTotal}, ${montoIva10}, ${montoIva5}, ${montoExento},
       ${payload.referenciaExterna || null},
       ${payload.webhookUrl        || null}
     ) RETURNING *
   `
 
-  // ── 8. Enviar a SIFEN ───────────────────────────────────────────────────────
+  // ── 10. Enviar a SIFEN ──────────────────────────────────────────────────────
   const sifen       = await enviarASIFEN(xmlFirmado, tenant.ambiente)
   const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
 
-  // ── 9. Actualizar estado final ──────────────────────────────────────────────
+  // ── 11. Actualizar estado final ─────────────────────────────────────────────
   const [docFinal] = await sql`
     UPDATE documentos SET
       estado        = ${estadoFinal},
@@ -179,7 +250,7 @@ export async function procesarDocumento(tenantId, payload) {
     WHERE id = ${doc.id} RETURNING *
   `
 
-  // ── 10. Log ─────────────────────────────────────────────────────────────────
+  // ── 12. Log ─────────────────────────────────────────────────────────────────
   await sql`
     INSERT INTO sifen_logs (
       documento_id, tenant_id, accion,
