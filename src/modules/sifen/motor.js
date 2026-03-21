@@ -37,21 +37,19 @@ export async function procesarDocumento(tenantId, payload) {
   // ── 2. Timbrado activo ──────────────────────────────────────────────────────
   const tipoDoc = payload.tipoDocumento || 1
   const [timbrado] = await sql`
-    SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
-           e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
-           e.departamento_nombre, e.distrito_codigo, e.telefono AS est_telefono,
-           e.email AS est_email, e.denominacion AS est_denominacion,
-           p.codigo AS punto_codigo
-    FROM timbrados t
-    JOIN establecimientos e ON e.id = t.establecimiento_id
-    JOIN puntos_expedicion p ON p.id = t.punto_id
-    WHERE t.tenant_id = ${tenantId}
-      AND t.tipo_documento = ${tipoDoc}
-      AND t.activo = true
-      AND t.vigencia_desde <= CURRENT_DATE
-      AND t.vigencia_hasta >= CURRENT_DATE
-      AND t.numero_actual <= t.numero_max
-    ORDER BY t.vigencia_hasta DESC LIMIT 1
+  SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
+         e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
+         p.codigo AS punto_codigo
+  FROM timbrados t
+  JOIN establecimientos e ON e.id = t.establecimiento_id
+  JOIN puntos_expedicion p ON p.id = t.punto_id
+  WHERE t.tenant_id = ${tenantId}
+    AND t.tipo_documento = ${tipoDoc}
+    AND t.activo = true
+    AND t.vigencia_desde <= CURRENT_DATE
+    AND t.vigencia_hasta >= CURRENT_DATE
+    AND t.numero_actual <= t.numero_max
+  ORDER BY t.vigencia_hasta DESC LIMIT 1
   `
   if (!timbrado) return respuestaError(`Sin timbrado activo para tipo de documento ${tipoDoc}`)
 
@@ -98,19 +96,19 @@ export async function procesarDocumento(tenantId, payload) {
   tipoContribuyente: 2,
   tipoRegimen:       8,
   establecimientos: [{
-    codigo:                  estCodigo,
-    direccion:               timbrado.estDireccion || 'Paraguay',
-    numeroCasa:              '0',
-    departamento:            11,
-    departamentoDescripcion: 'CAPITAL',
-    distrito:                1,
-    distritoDescripcion:     'ASUNCION',
-    ciudad:                  1,
-    ciudadDescripcion:       'ASUNCION',
-    telefono:                '000',
-    email:                   '',
-    denominacion:            'Casa Central',
-  }],
+  codigo:                  estCodigo,
+  direccion:               timbrado.estDireccion || 'Paraguay',
+  numeroCasa:              '0',
+  departamento:            timbrado.departamentoCodigo || 11,
+  departamentoDescripcion: 'CAPITAL',
+  distrito:                1,
+  distritoDescripcion:     'ASUNCION',
+  ciudad:                  timbrado.ciudadCodigo || 1,
+  ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION',
+  telefono:                '000',
+  email:                   '',
+  denominacion:            'Casa Central',
+}],
   }
 
   // ── 6. Construir data (datos variables del documento) ───────────────────────
