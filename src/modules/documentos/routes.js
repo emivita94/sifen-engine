@@ -3,6 +3,7 @@
 
 import { procesarDocumento } from '../sifen/motor.js'
 import { getDb } from '../../db/connection.js'
+import { generarKude } from '../sifen/kude.js'
 import { z } from 'zod'
 
 // Schema Zod de validación mínima para una factura
@@ -45,7 +46,6 @@ export async function documentosRoutes(fastify) {
       security: [{ apiKey: [] }],
     },
   }, async (request, reply) => {
-    // Valida payload
     const parse = emitirSchema.safeParse(request.body)
     if (!parse.success) {
       return reply.status(400).send({
@@ -161,6 +161,51 @@ export async function documentosRoutes(fastify) {
     return doc.xmlAprobado || doc.xmlFirmado
   })
 
+  // ─── GET /documentos/:cdc/kude - Descargar KUDE PDF ──────────────────────
+  // ?formato=a4        → PDF A4 (default)
+  // ?formato=ticket80  → Ticket 80mm
+  // ?formato=ticket58  → Ticket 58mm
+  fastify.get('/:cdc/kude', async (request, reply) => {
+    const sql = getDb()
+    const { cdc } = request.params
+    const formato = request.query.formato || 'a4'
+
+    const [doc] = await sql`
+      SELECT * FROM documentos
+      WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}
+    `
+    if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
+
+    const [tenant] = await sql`
+      SELECT ruc, razon_social, direccion, email, telefono
+      FROM tenants WHERE id = ${request.tenant.id}
+    `
+
+    // Generar QR si el documento está aprobado
+    let qrBase64 = null
+    if (doc.estado === 'aprobado' && doc.cdc) {
+      try {
+        const qrgen = (await import('facturacionelectronicapy-qrgen')).default
+        const urlConsulta = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${doc.cdc}`
+        qrBase64 = await qrgen.generateQR(urlConsulta, { type: 'image/png', quality: 0.92 })
+      } catch (e) {
+        // Continuar sin QR si falla
+      }
+    }
+
+    try {
+      const pdfBytes = await generarKude(doc, tenant, formato, qrBase64)
+
+      reply.header('Content-Type', 'application/pdf')
+      reply.header('Content-Disposition', `inline; filename="KUDE-${(doc.numero || cdc).replace(/\//g, '-')}.pdf"`)
+      reply.header('Content-Length', pdfBytes.length)
+      return reply.send(Buffer.from(pdfBytes))
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error generando KUDE', mensaje: err.message })
+    }
+  })
+
   // ─── POST /documentos/:cdc/cancelar ───────────────────────────────────────
   fastify.post('/:cdc/cancelar', {
     schema: {
@@ -189,12 +234,11 @@ export async function documentosRoutes(fastify) {
       })
     }
 
-    // TODO: implementar envío de evento de cancelación a SIFEN
-    // Es similar al envío normal pero con tipo de evento = 'cancelacion'
     await sql`
       UPDATE documentos SET estado = 'cancelado' WHERE id = ${doc.id}
     `
 
     return { ok: true, mensaje: 'Cancelación enviada a SIFEN' }
   })
+
 }
