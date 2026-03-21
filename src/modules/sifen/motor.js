@@ -11,7 +11,8 @@ let xmlgen, xmlsign, setapi
 async function cargarLibrerias() {
   if (!xmlgen) {
     try {
-      xmlgen  = (await import('facturacionelectronicapy-xmlgen')).default
+      const mod = await import('facturacionelectronicapy-xmlgen')
+xmlgen = mod.default || mod
       xmlsign = (await import('facturacionelectronicapy-xmlsign')).default
       setapi  = (await import('facturacionelectronicapy-setapi')).default
     } catch (e) {
