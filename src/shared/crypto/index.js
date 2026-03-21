@@ -53,6 +53,9 @@ export function generarApiKey(ambiente = 'live') {
   const random = randomBytes(32).toString('base64url')
   const key = `sk_${ambiente}_${random}`
   const hash = hashApiKey(key)
+  console.log('KEY RECIBIDO:', key)
+console.log('HASH GENERADO:', hash)
+console.log('HASH EN BD:   fd9391f9d04741a8ce9345581f1e683845b1d8a4515878f0fbd9cf4990100b37')
   const prefix = key.substring(0, 16)
 
   return { key, hash, prefix }
