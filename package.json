@@ -5,9 +5,9 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "dev": "node --watch src/index.js",
-    "start": "node src/index.js"
-  },
+  "start": "apt-get install -y -q default-jre-headless 2>/dev/null; node src/index.js",
+  "dev": "node --watch src/index.js"
+},
   "dependencies": {
     "@fastify/jwt": "^8.0.1",
     "@fastify/rate-limit": "^9.1.0",
