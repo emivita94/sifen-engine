@@ -216,7 +216,7 @@ export async function procesarDocumento(tenantId, payload) {
 
 
     // Agregar gCamFuFD ANTES de firmar
-const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${cdc}`
+const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&amp;Id=${cdc}`
 const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
 const xmlConQR = xmlGenerado.replace('</rDE>', `${gCamFuFD}</rDE>`)
 
