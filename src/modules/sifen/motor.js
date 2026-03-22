@@ -33,7 +33,7 @@ export async function procesarDocumento(tenantId, payload) {
            codigo_seguridad, cert_password
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
-  if (!tenant)               return respuestaError('Tenant no encontrado o inactivo')
+  if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
   if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
 
   // ── 2. Timbrado activo ──────────────────────────────────────────────────────
@@ -66,9 +66,10 @@ export async function procesarDocumento(tenantId, payload) {
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
 
-  // ── 4. Params (datos estáticos del emisor para xmlgen) ──────────────────────
+  // ── 4. Params (datos estáticos del emisor) ──────────────────────────────────
   const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
-  const depCodigo = timbrado.departamentoCodigo || 11
+  const depCodigo     = timbrado.departamentoCodigo || 11
+  const fechaEmision  = payload.fecha ? new Date(payload.fecha) : new Date()
 
   const params = {
     version:           150,
@@ -80,26 +81,25 @@ export async function procesarDocumento(tenantId, payload) {
     timbradoFecha,
     tipoContribuyente: 1,
     tipoRegimen:       8,
-   establecimientos: [{
-  codigo:                  estCodigo,
-  direccion:               'CAPITAN FIGARI E/MANUEL DOMINGUEZ Y PETTIROSSI',
-  numeroCasa:              '0',
-  departamento:            11,
-  departamentoDescripcion: 'ALTO PARANA',
-  distrito:                145,
-  distritoDescripcion:     'CIUDAD DEL ESTE',
-  ciudad:                  3432,
-  ciudadDescripcion:       'PUERTO PTE.STROESSNER (MUNIC)',
-  telefono:                '0981818995',
-  email:                   'jchaparrosaucedo@gmail.com',
-  denominacion:            'Casa Central',
-}],
+    establecimientos: [{
+      codigo:                  estCodigo,
+      direccion:               timbrado.estDireccion || 'Sin dirección',
+      numeroCasa:              '0',
+      departamento:            depCodigo,
+      departamentoDescripcion: depCodigo === 11 ? 'ALTO PARANA' : 'PARAGUAY',
+      distrito:                145,
+      distritoDescripcion:     'CIUDAD DEL ESTE',
+      ciudad:                  3432,
+      ciudadDescripcion:       'PUERTO PTE.STROESSNER (MUNIC)',
+      telefono:                '021000000',
+      email:                   '',
+      denominacion:            'Casa Central',
+    }],
   }
 
-  // ── 5. Data (datos variables del documento para xmlgen) ─────────────────────
-  const receptor = payload.receptor || {}
-  const codigoSeguridad = (tenant.codigoSeguridad || '000000000').toString().padStart(9, '0').substring(0, 9)
-  const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date()
+  // ── 5. Data (datos variables del documento) ─────────────────────────────────
+  const receptor        = payload.receptor || {}
+  const codigoSeguridad = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
 
   const esContribuyente = receptor.tipo === 1
   const esInnominado    = receptor.tipo === 4 || !receptor.tipo
@@ -149,11 +149,13 @@ export async function procesarDocumento(tenantId, payload) {
     cdcAnticipo:          '',
   }))
 
+  const montoTotal = calcularMontoTotal(payload)
+
   const condicion = {
     tipo: 1,
     entregas: [{
       tipo:   1,
-      monto:  String(calcularMontoTotal(payload)),
+      monto:  String(montoTotal),
       moneda: payload.moneda || 'PYG',
       cambio: 0,
     }],
@@ -182,48 +184,63 @@ export async function procesarDocumento(tenantId, payload) {
     condicion,
     items,
     usuario: {
-    documentoTipo:   1,
-    documentoNumero: '2488331',
-    nombre:          'CHAPARRO SAUCEDO VICTOR NICOLAS',
-    cargo:           'Propietario'
-  },
-    // NO pasamos cdc — xmlgen lo genera internamente
+      documentoTipo:   1,
+      documentoNumero: tenant.ruc.split('-')[0],
+      nombre:          tenant.razonSocial,
+      cargo:           'Propietario',
+    },
   }
 
   // ── 6. Generar XML ──────────────────────────────────────────────────────────
   let xmlGenerado
   try {
     xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
-
-    // Extraer CDC real del XML generado por la librería
   } catch (err) {
     return respuestaError('Error generando XML del DE', err.message)
   }
 
-  // Extraer CDC del atributo Id del XML
+  // Extraer CDC del XML generado por xmlgen (fuente de verdad)
   const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
   const cdc = cdcMatch ? cdcMatch[1] : null
   if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
 
-  // ── 7. Firmar XML y enviar a SIFEN ──────────────────────────────────────────
+  // ── 7. Firmar XML y preparar para SIFEN ─────────────────────────────────────
   let xmlFirmado
   let sifen
   const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
+
   try {
     const certBuffer   = desencriptar(tenant.certificadoEnc)
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
+    // Firmar con Node.js puro (sin Java)
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
-  // Firmar primero
-xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+    // Verificar que la firma quedó bien
+    if (!xmlFirmado || !xmlFirmado.includes('</Signature>')) {
+      throw new Error('La firma digital no se generó correctamente')
+    }
 
-// Agregar gCamFuFD DESPUÉS de la firma
-const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&amp;Id=${cdc}`
-const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
-xmlFirmado = xmlFirmado.replace('</Signature></rDE>', `</Signature>${gCamFuFD}</rDE>`)
+    // Agregar gCamFuFD después de </Signature> — SIFEN lo requiere fuera del DE pero dentro de rDE
+    // La URL usa & escapado como &amp; para ser XML válido
+    const urlQR    = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&amp;Id=${cdc}`
+    const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
 
-sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
+    // El XML firmado termina en </Signature></rDE> — insertamos gCamFuFD entre ambos
+    // Usamos regex para ser resilientes a espacios o variaciones
+    const xmlConQR = xmlFirmado.replace(/<\/Signature>(\s*)<\/rDE>/, `</Signature>${gCamFuFD}</rDE>`)
+
+    if (xmlConQR === xmlFirmado) {
+      // El replace no encontró el patrón — logueamos para debug
+      console.error('WARN: No se pudo insertar gCamFuFD. Últimos 200 chars:', xmlFirmado.slice(-200))
+    }
+
+    // Enviar a SIFEN
+    sifen = await enviarASIFEN(xmlConQR, tenant.ambiente, tmpCert, certPassword)
+
+    // Guardar el XML con QR para persistir
+    xmlFirmado = xmlConQR
 
   } catch (err) {
     return respuestaError('Error firmando o enviando el DE', err.message)
@@ -234,7 +251,6 @@ sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
   const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
 
   // ── 8. Persistir ────────────────────────────────────────────────────────────
-  const montoTotal  = calcularMontoTotal(payload)
   const montoIva10  = calcularIVA10(payload)
   const montoIva5   = calcularIVA5(payload)
   const montoExento = calcularExento(payload)
@@ -269,7 +285,7 @@ sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
     WHERE id = ${doc.id} RETURNING *
   `
 
-  // ── 10. Log ─────────────────────────────────────────────────────────────────
+  // ── 10. Log SIFEN ───────────────────────────────────────────────────────────
   await sql`
     INSERT INTO sifen_logs (
       documento_id, tenant_id, accion,
@@ -289,11 +305,15 @@ sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
 export async function cancelarDocumento(tenantId, cdc) {
   const sql = getDb()
-  const [doc] = await sql`SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${tenantId}`
+  const [doc] = await sql`
+    SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${tenantId}
+  `
   if (!doc) return respuestaError('Documento no encontrado')
   if (doc.estado !== 'aprobado') return respuestaError(`No se puede cancelar un DE en estado: ${doc.estado}`)
+
   const [docCancelado] = await sql`
-    UPDATE documentos SET estado = 'cancelado', actualizado_en = now() WHERE id = ${doc.id} RETURNING *
+    UPDATE documentos SET estado = 'cancelado', actualizado_en = now()
+    WHERE id = ${doc.id} RETURNING *
   `
   dispararWebhook(docCancelado, 'de.cancelado').catch(() => {})
   return respuestaDE(docCancelado)
@@ -305,10 +325,11 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
 
-    // Asegurar salto de línea después de la declaración XML
+    // setapi.recibe() hace split("\n").slice(1) para quitar el <?xml...?>
+    // El XML firmado es una sola línea, así que necesitamos el \n después de la declaración
     const xmlParaEnviar = xmlFirmado.replace(
-      '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
-      '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+      /^(<\?xml[^?]*\?>)/,
+      '$1\n'
     )
 
     const r = await _setapi.recibe(
@@ -319,15 +340,28 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
       certPassword,
       { timeout: config.sifen.timeoutMs }
     )
+
     console.log('SIFEN RESPONSE:', JSON.stringify(r))
 
+    // Parsear respuesta del endpoint recibe (síncrono)
     const resp     = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
-    const aprobado = ['0260', '0422'].includes(resp?.['ns2:dCodRes'])
+    // gResProc puede ser objeto o array (cuando hay múltiples errores)
+    const primerResp = Array.isArray(resp) ? resp[0] : resp
+    const aprobado = ['0260', '0422'].includes(primerResp?.['ns2:dCodRes'])
+
+    // Si hay múltiples errores, concatenar mensajes
+    let mensaje = null
+    if (Array.isArray(resp)) {
+      mensaje = resp.map(r => r?.['ns2:dMsgRes']).filter(Boolean).join(' | ')
+    } else {
+      mensaje = primerResp?.['ns2:dMsgRes'] || null
+    }
+
     return {
       aprobado,
-      codigo:       resp?.['ns2:dCodRes'] || null,
-      mensaje:      resp?.['ns2:dMsgRes'] || null,
-      xmlRespuesta: JSON.stringify(r)     || null,
+      codigo:       primerResp?.['ns2:dCodRes'] || null,
+      mensaje,
+      xmlRespuesta: JSON.stringify(r) || null,
       enviadoEn,
       respondidoEn: new Date(),
       duracionMs:   Date.now() - inicio,
