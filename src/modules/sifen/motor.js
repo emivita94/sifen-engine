@@ -302,14 +302,17 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const enviadoEn = new Date()
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
-   const r = await _setapi.recibeLote(
-  1,              // id numérico
-  [xmlFirmado],   // array de XMLs
+  const r = await _setapi.recibeLote(
+  1,
+  [xmlFirmado],
   env,
   certPath,
   certPassword,
   { timeout: config.sifen.timeoutMs }
 )
+console.log('SIFEN RESPONSE:', JSON.stringify(r))
+
+
     const aprobado = ['0260', '0422'].includes(r?.dRespuesta?.dCodRes)
     return {
       aprobado,
