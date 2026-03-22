@@ -213,7 +213,7 @@ export async function procesarDocumento(tenantId, payload) {
   try {
     const certBuffer = desencriptar(tenant.certificadoEnc)
     writeFileSync(tmpCert, certBuffer)
-    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, tenant.certAlias || '', true)
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, '12345678', true)
   } catch (err) {
     return respuestaError('Error firmando el XML con el certificado digital', err.message)
   } finally {
