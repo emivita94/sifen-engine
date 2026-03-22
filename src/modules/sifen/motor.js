@@ -273,7 +273,8 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
-    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+   // false = usar Java (compatible con SIFEN)
+xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, false)
 
     if (!xmlFirmado || !xmlFirmado.includes('</Signature>')) {
       throw new Error('La firma digital no se generó correctamente')
