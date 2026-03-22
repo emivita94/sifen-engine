@@ -5,6 +5,8 @@ import { generarCDC } from '../../shared/utils/cdc.js'
 import { config } from '../../config/index.js'
 import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
+import { writeFileSync, unlinkSync } from 'fs'
+import { join } from 'path'
 
 let _xmlgen, _xmlsign, _setapi
 
@@ -81,12 +83,10 @@ export async function procesarDocumento(tenantId, payload) {
     ambiente:        tenant.ambiente === 'prod' ? 1 : 2,
   })
 
-  // ── 5. Params (datos estáticos del emisor para xmlgen) ──────────────────────
+  // ── 5. Params (datos estáticos del emisor) ──────────────────────────────────
   const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
-
-  // Departamento y distrito compatibles — usamos Asunción (11/1/1) por defecto
-  // si no hay datos en el establecimiento
   const depCodigo = timbrado.departamentoCodigo || 11
+
   const params = {
     version:           150,
     ruc:               tenant.ruc,
@@ -103,78 +103,72 @@ export async function procesarDocumento(tenantId, payload) {
       numeroCasa:              '0',
       departamento:            depCodigo,
       departamentoDescripcion: depCodigo === 11 ? 'CAPITAL' : 'PARAGUAY',
-     distrito:                143,
-distritoDescripcion:     'ASUNCION',
-ciudad:                  3344,
-ciudadDescripcion:       'ASUNCION (DISTRITO)',
-      telefono:                '021000000',  // mínimo 6 chars requerido
+      distrito:                143,
+      distritoDescripcion:     'ASUNCION',
+      ciudad:                  3344,
+      ciudadDescripcion:       timbrado.ciudadNombre || 'ASUNCION (DISTRITO)',
+      telefono:                '021000000',
       email:                   '',
       denominacion:            'Casa Central',
     }],
   }
 
-  // ── 6. Data (datos variables del documento para xmlgen) ─────────────────────
+  // ── 6. Data (datos variables del documento) ─────────────────────────────────
   const receptor = payload.receptor || {}
   const codigoSeguridad = (tenant.codigoSeguridad || '000000000').toString().padStart(9, '0').substring(0, 9)
 
-  // Mapear receptor al formato "cliente" de xmlgen
-  // tipo 1=RUC, 2=CI, 3=Pasaporte, 4=Innominado
   const esContribuyente = receptor.tipo === 1
   const esInnominado    = receptor.tipo === 4 || !receptor.tipo
 
   const cliente = {
-    contribuyente:    esContribuyente,
-    ruc:              esContribuyente ? receptor.documento : undefined,
-    documentoTipo:    esInnominado ? 5 : // 5=Innominado
-                      receptor.tipo === 2 ? 1 :  // 1=CI
-                      receptor.tipo === 3 ? 2 :  // 2=Pasaporte
-                      undefined,
-    documentoNumero:  esInnominado ? '0' : (receptor.documento || '0'),
-    razonSocial:      receptor.razonSocial || 'Sin Nombre',
-    pais:             receptor.pais || 'PRY',
-    paisDescripcion:  'Paraguay',
+    contribuyente:     esContribuyente,
+    ruc:               esContribuyente ? receptor.documento : undefined,
+    documentoTipo:     esInnominado ? 5 :
+                       receptor.tipo === 2 ? 1 :
+                       receptor.tipo === 3 ? 2 : undefined,
+    documentoNumero:   esInnominado ? '0' : (receptor.documento || '0'),
+    razonSocial:       receptor.razonSocial || 'Sin Nombre',
+    pais:              receptor.pais || 'PRY',
+    paisDescripcion:   'Paraguay',
     tipoContribuyente: esContribuyente ? 1 : 2,
-    tipoOperacion:    esContribuyente ? 1 : 2,  // 1=B2B, 2=B2C
-    email:            receptor.email || '',
+    tipoOperacion:     esContribuyente ? 1 : 2,
+    email:             receptor.email || '',
   }
 
-  // Mapear items al formato de xmlgen
   const items = (payload.items || []).map((item, idx) => ({
-    codigo:           String(idx + 1),
-    descripcion:      item.descripcion,
-    unidadMedida:     77,
-    cantidad:         item.cantidad,
-    precioUnitario:   item.precioUnitario,
-    cambio:           0,
-    descuento:        0,
-    anticipo:         0,
-    porcDescuento:    0,
-    descuentoGlobalItem: 0,
-    anticipoGlobalItem:  0,
-    ivaTipo:          1,
-    ivaBase:          100,
-    iva:              item.tasaIVA,
-    lote:             '',
-    vencimiento:      '',
-    numeroSerie:      '',
-    numeroPedido:     '',
-    numeroSeguimiento: '',
-    importacion:      {},
-    dncp:             {},
-    pais:             'PRY',
-    paisDescripcion:  'Paraguay',
-    tolerancia:       0,
+    codigo:               String(idx + 1),
+    descripcion:          item.descripcion,
+    unidadMedida:         77,
+    cantidad:             item.cantidad,
+    precioUnitario:       item.precioUnitario,
+    cambio:               0,
+    descuento:            0,
+    anticipo:             0,
+    porcDescuento:        0,
+    descuentoGlobalItem:  0,
+    anticipoGlobalItem:   0,
+    ivaTipo:              1,
+    ivaBase:              100,
+    iva:                  item.tasaIVA,
+    lote:                 '',
+    vencimiento:          '',
+    numeroSerie:          '',
+    numeroPedido:         '',
+    numeroSeguimiento:    '',
+    importacion:          {},
+    dncp:                 {},
+    pais:                 'PRY',
+    paisDescripcion:      'Paraguay',
+    tolerancia:           0,
     toleranciaCantidad:   0,
     toleranciaPorcentaje: 0,
-    cdcAnticipo:      '',
+    cdcAnticipo:          '',
   }))
 
-  // Condición de pago (requerida por xmlgen)
-  // 1=Contado, 2=Crédito
   const condicion = {
-    tipo: 1,  // Contado
+    tipo: 1,
     entregas: [{
-      tipo:   1,   // 1=Efectivo
+      tipo:   1,
       monto:  String(calcularMontoTotal(payload)),
       moneda: payload.moneda || 'PYG',
       cambio: 0,
@@ -213,13 +207,17 @@ ciudadDescripcion:       'ASUNCION (DISTRITO)',
     return respuestaError('Error generando XML del DE', err.message)
   }
 
-  // ── 8. Firmar XML ───────────────────────────────────────────────────────────
+  // ── 8. Firmar XML (Node.js puro, sin Java) ──────────────────────────────────
   let xmlFirmado
+  const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
   try {
     const certBuffer = desencriptar(tenant.certificadoEnc)
-    xmlFirmado = await _xmlsign.signXML(xmlGenerado, certBuffer, tenant.certAlias || '', true)
+    writeFileSync(tmpCert, certBuffer)
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, tenant.certAlias || '', true)
   } catch (err) {
     return respuestaError('Error firmando el XML con el certificado digital', err.message)
+  } finally {
+    try { unlinkSync(tmpCert) } catch (e) {}
   }
 
   // ── 9. Persistir estado "firmado" ───────────────────────────────────────────
