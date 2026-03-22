@@ -92,7 +92,7 @@ export async function procesarDocumento(tenantId, payload) {
       ciudad:                  3432,
       ciudadDescripcion:       'PUERTO PTE.STROESSNER (MUNIC)',
       telefono:                '021000000',
-      email:                   '',
+      email: 'sin@email.com',
       denominacion:            'Casa Central',
     }],
   }
