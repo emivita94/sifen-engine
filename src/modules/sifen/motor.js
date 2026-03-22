@@ -233,7 +233,7 @@ export async function procesarDocumento(tenantId, payload) {
     punto:                    puntoCodigo,
     numero:                   numeroSecuencia.toString().padStart(7, '0'),
     codigoSeguridadAleatorio: codigoSeguridad,
-    descripcion:              payload.descripcion || 'Factura',
+    descripcion:              payload.descripcion || '',
     observacion:              payload.observacion || '',
     fecha:                    fechaEmision.toISOString().substring(0, 19),
     tipoEmision:              1,
