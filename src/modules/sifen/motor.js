@@ -398,9 +398,13 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
 
     // setapi.recibe() hace split("\n").slice(1) para quitar el <?xml?>
     // necesitamos \n después de la declaración XML
-const xmlParaEnviar = xmlFirmado
+// Formatear el XML para que no sea una sola línea
+const xmlFormateado = xmlFirmado
   .replace('standalone="no"', 'standalone="yes"')
-  .replace(/^(<\?xml[^?]*\?>)/, '$1\n')
+  .replace(/></g, '>\n<')
+
+const xmlParaEnviar = xmlFormateado.replace(/^(<\?xml[^?]*\?>)/, '$1\n')
+
 
     const r = await _setapi.recibe(
       1,
