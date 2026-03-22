@@ -290,14 +290,21 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const enviadoEn = new Date()
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
+
+    // Asegurar salto de línea después de la declaración XML
+    const xmlParaEnviar = xmlFirmado.replace(
+      '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
+      '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+    )
+
     const r = await _setapi.recibe(
-  1,
-  xmlFirmado,
-  env,
-  certPath,
-  certPassword,
-  { timeout: config.sifen.timeoutMs, debug: true }
-)
+      1,
+      xmlParaEnviar,
+      env,
+      certPath,
+      certPassword,
+      { timeout: config.sifen.timeoutMs }
+    )
     console.log('SIFEN RESPONSE:', JSON.stringify(r))
 
     const resp     = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
