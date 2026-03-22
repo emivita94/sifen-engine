@@ -214,13 +214,13 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
+
+    // Agregar gCamFuFD ANTES de firmar
+    const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${cdc}`
+    const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
+    const xmlConQR = xmlGenerado.replace('</rDE>', `${gCamFuFD}</rDE>`)
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
-
-    // Agregar gCamFuFD requerido por SIFEN
-const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${cdc}`
-const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
-
-xmlFirmado = xmlFirmado.replace('</Signature></rDE>', `</Signature>${gCamFuFD}</rDE>`)
+    xmlFirmado = xmlFirmado.replace('</Signature></rDE>', `</Signature>${gCamFuFD}</rDE>`)
     sifen      = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
