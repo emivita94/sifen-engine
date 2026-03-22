@@ -207,18 +207,29 @@ export async function procesarDocumento(tenantId, payload) {
     return respuestaError('Error generando XML del DE', err.message)
   }
 
-  // ── 8. Firmar XML (Node.js puro, sin Java) ──────────────────────────────────
+  // ── 8. Firmar XML y enviar a SIFEN ──────────────────────────────────────────
+  // El certificado se guarda temporalmente en disco (requerido por las librerías)
   let xmlFirmado
+  let sifen
   const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
   try {
-    const certBuffer = desencriptar(tenant.certificadoEnc)
+    const certBuffer  = desencriptar(tenant.certificadoEnc)
+    const certPassword = tenant.certPassword || '12345678' // TODO: guardar en BD por tenant
     writeFileSync(tmpCert, certBuffer)
-    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, '12345678', true)
+
+    // Firmar con Node.js puro (true = no usar Java)
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+
+    // Enviar a SIFEN
+    sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
+
   } catch (err) {
-    return respuestaError('Error firmando el XML con el certificado digital', err.message)
+    return respuestaError('Error firmando o enviando el DE', err.message)
   } finally {
     try { unlinkSync(tmpCert) } catch (e) {}
   }
+
+  const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
 
   // ── 9. Persistir estado "firmado" ───────────────────────────────────────────
   const montoTotal  = calcularMontoTotal(payload)
@@ -235,7 +246,7 @@ export async function procesarDocumento(tenantId, payload) {
       referencia_ext, webhook_url
     ) VALUES (
       ${tenantId}, ${timbrado.id}, ${cdc}, ${tipoDoc}, ${numeroFormateado}, ${numeroSecuencia},
-      'firmado', ${JSON.stringify(payload)}, ${xmlGenerado}, ${xmlFirmado},
+      ${estadoFinal}, ${JSON.stringify(payload)}, ${xmlGenerado}, ${xmlFirmado},
       ${receptor.tipo        || null},
       ${receptor.documento   || null},
       ${receptor.razonSocial || null},
@@ -245,14 +256,9 @@ export async function procesarDocumento(tenantId, payload) {
     ) RETURNING *
   `
 
-  // ── 10. Enviar a SIFEN ──────────────────────────────────────────────────────
-  const sifen       = await enviarASIFEN(xmlFirmado, tenant.ambiente)
-  const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
-
-  // ── 11. Actualizar estado final ─────────────────────────────────────────────
+  // ── 10. Actualizar con respuesta SIFEN ──────────────────────────────────────
   const [docFinal] = await sql`
     UPDATE documentos SET
-      estado        = ${estadoFinal},
       xml_aprobado  = ${sifen.xmlRespuesta || null},
       sifen_codigo  = ${sifen.codigo       || null},
       sifen_mensaje = ${sifen.mensaje      || null},
@@ -261,7 +267,7 @@ export async function procesarDocumento(tenantId, payload) {
     WHERE id = ${doc.id} RETURNING *
   `
 
-  // ── 12. Log ─────────────────────────────────────────────────────────────────
+  // ── 11. Log ─────────────────────────────────────────────────────────────────
   await sql`
     INSERT INTO sifen_logs (
       documento_id, tenant_id, accion,
@@ -291,27 +297,38 @@ export async function cancelarDocumento(tenantId, cdc) {
   return respuestaDE(docCancelado)
 }
 
-async function enviarASIFEN(xmlFirmado, ambiente) {
+async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const inicio    = Date.now()
   const enviadoEn = new Date()
   try {
+    const env = ambiente === 'prod' ? 'prod' : 'test'
     const r = await _setapi.recibeLote(
-      xmlFirmado,
-      ambiente === 'prod' ? 'prod' : 'test',
+      null,         // id
+      xmlFirmado,   // xml firmado
+      env,          // ambiente
+      certPath,     // ruta al .p12
+      certPassword, // contraseña del cert
       { timeout: config.sifen.timeoutMs }
     )
     const aprobado = ['0260', '0422'].includes(r?.dRespuesta?.dCodRes)
     return {
-      aprobado, codigo: r?.dRespuesta?.dCodRes, mensaje: r?.dRespuesta?.dMsgRes,
-      xmlRespuesta: r?.xmlRespuesta || null,
-      enviadoEn, respondidoEn: new Date(), duracionMs: Date.now() - inicio,
+      aprobado,
+      codigo:       r?.dRespuesta?.dCodRes  || null,
+      mensaje:      r?.dRespuesta?.dMsgRes  || null,
+      xmlRespuesta: r?.xmlRespuesta         || null,
+      enviadoEn,
+      respondidoEn: new Date(),
+      duracionMs:   Date.now() - inicio,
     }
   } catch (err) {
     return {
-      aprobado: false, codigo: 'ERR',
-      mensaje: `Error de conexión con SIFEN: ${err.message}`,
+      aprobado:     false,
+      codigo:       'ERR',
+      mensaje:      `Error de conexión con SIFEN: ${err.message}`,
       xmlRespuesta: null,
-      enviadoEn, respondidoEn: new Date(), duracionMs: Date.now() - inicio,
+      enviadoEn,
+      respondidoEn: new Date(),
+      duracionMs:   Date.now() - inicio,
     }
   }
 }
