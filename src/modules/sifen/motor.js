@@ -78,7 +78,7 @@ export async function procesarDocumento(tenantId, payload) {
     actividadesEconomicas: [{ codigo: '82999', descripcion: 'Servicios' }],
     timbradoNumero:    timbrado.numeroTimbrado,
     timbradoFecha,
-    tipoContribuyente: 2,
+    tipoContribuyente: 1,
     tipoRegimen:       8,
    establecimientos: [{
   codigo:                  estCodigo,
@@ -181,6 +181,12 @@ export async function procesarDocumento(tenantId, payload) {
     factura: { presencia: 1 },
     condicion,
     items,
+    usuario: {
+    documentoTipo:   1,
+    documentoNumero: '2488331',
+    nombre:          'CHAPARRO SAUCEDO VICTOR NICOLAS',
+    cargo:           'Propietario'
+  },
     // NO pasamos cdc — xmlgen lo genera internamente
   }
 
