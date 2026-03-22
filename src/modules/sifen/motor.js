@@ -11,20 +11,42 @@ import https from 'https'
 import axios from 'axios'
 import xml2js from 'xml2js'
 
-let _xmlgen, _xmlsign, _pkcs12
+let _xmlgen, _xmlsign
 
 async function cargarLibrerias() {
   if (_xmlgen) return
   try {
     const modXmlgen  = await import('facturacionelectronicapy-xmlgen')
     const modXmlsign = await import('facturacionelectronicapy-xmlsign')
-    const modPkcs12  = await import('facturacionelectronicapy-pkcs12')
     _xmlgen  = modXmlgen.default?.default  || modXmlgen.default  || modXmlgen
     _xmlsign = modXmlsign.default?.default || modXmlsign.default || modXmlsign
-    _pkcs12  = modPkcs12.default?.default  || modPkcs12.default  || modPkcs12
   } catch (e) {
     throw new Error('Error cargando librerías SIFEN: ' + e.message)
   }
+}
+
+// Extrae cert PEM y key PEM de un archivo .p12 usando node-forge
+function extraerCertKey(certPath, password) {
+  const forge = require('node-forge')
+  const p12Der = readFileSync(certPath).toString('binary')
+  const p12Asn1 = forge.asn1.fromDer(p12Der)
+  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password)
+
+  let certPem = ''
+  let keyPem  = ''
+
+  for (const safeContent of p12.safeContents) {
+    for (const safeBag of safeContent.safeBags) {
+      if (safeBag.type === forge.pki.oids.certBag) {
+        certPem = forge.pki.certificateToPem(safeBag.cert)
+      }
+      if (safeBag.type === forge.pki.oids.pkcs8ShroudedKeyBag ||
+          safeBag.type === forge.pki.oids.keyBag) {
+        keyPem = forge.pki.privateKeyToPem(safeBag.key)
+      }
+    }
+  }
+  return { certPem, keyPem }
 }
 
 function generarUrlQR({ cdc, fechaEmision, rucReceptor, montoTotal, montoIVA, cantItems, digestValue, idCSC, codigoSeg }) {
@@ -337,14 +359,12 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
       ? 'https://sifen.set.gov.py/de/ws/sync/recibe.wsdl'
       : 'https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl'
 
-    // Abrir certificado para TLS mutuo usando PKCS12 de setapi
-    _pkcs12.openFile(certPath, certPassword)
-    const cert = _pkcs12.getCertificate()
-    const key  = _pkcs12.getPrivateKey()
+    // Extraer cert y key del .p12 usando node-forge
+    const { certPem, keyPem } = extraerCertKey(certPath, certPassword)
 
     const httpsAgent = new https.Agent({
-      cert: Buffer.from(cert, 'utf8'),
-      key:  Buffer.from(key,  'utf8'),
+      cert: certPem,
+      key:  keyPem,
     })
 
     // Quitar declaración XML (<?xml...?>) — SIFEN la rechaza dentro del SOAP
