@@ -30,7 +30,8 @@ export async function procesarDocumento(tenantId, payload) {
 
   // ── 1. Tenant ───────────────────────────────────────────────────────────────
   const [tenant] = await sql`
-    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias, codigo_seguridad
+    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias,
+           codigo_seguridad, cert_password
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)               return respuestaError('Tenant no encontrado o inactivo')
@@ -203,22 +204,23 @@ export async function procesarDocumento(tenantId, payload) {
   let xmlGenerado
   try {
     xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
+    console.log('XML GENERADO (primeros 500 chars):', xmlGenerado?.substring(0, 500))
   } catch (err) {
     return respuestaError('Error generando XML del DE', err.message)
   }
 
   // ── 8. Firmar XML y enviar a SIFEN ──────────────────────────────────────────
-  // El certificado se guarda temporalmente en disco (requerido por las librerías)
   let xmlFirmado
   let sifen
   const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
   try {
-    const certBuffer  = desencriptar(tenant.certificadoEnc)
-    const certPassword = tenant.certPassword || '12345678' // TODO: guardar en BD por tenant
+    const certBuffer   = desencriptar(tenant.certificadoEnc)
+    const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
-    // Firmar con Node.js puro (true = no usar Java)
+    // Firmar con Node.js puro (true = sin Java)
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+    console.log('XML FIRMADO (primeros 200 chars):', xmlFirmado?.substring(0, 200))
 
     // Enviar a SIFEN
     sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
@@ -231,7 +233,7 @@ export async function procesarDocumento(tenantId, payload) {
 
   const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
 
-  // ── 9. Persistir estado "firmado" ───────────────────────────────────────────
+  // ── 9. Persistir ────────────────────────────────────────────────────────────
   const montoTotal  = calcularMontoTotal(payload)
   const montoIva10  = calcularIVA10(payload)
   const montoIva5   = calcularIVA5(payload)
@@ -302,23 +304,24 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const enviadoEn = new Date()
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
-  const r = await _setapi.recibe(
-  1,
-  xmlFirmado,   // string, no array
-  env,
-  certPath,
-  certPassword,
-  { timeout: config.sifen.timeoutMs }
-)
-console.log('SIFEN RESPONSE:', JSON.stringify(r))
+    const r = await _setapi.recibe(
+      1,
+      xmlFirmado,
+      env,
+      certPath,
+      certPassword,
+      { timeout: config.sifen.timeoutMs }
+    )
+    console.log('SIFEN RESPONSE:', JSON.stringify(r))
 
-
-    const aprobado = ['0260', '0422'].includes(r?.dRespuesta?.dCodRes)
+    // Parsear respuesta del endpoint recibe (síncrono)
+    const resp     = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
+    const aprobado = ['0260', '0422'].includes(resp?.['ns2:dCodRes'])
     return {
       aprobado,
-      codigo:       r?.dRespuesta?.dCodRes  || null,
-      mensaje:      r?.dRespuesta?.dMsgRes  || null,
-      xmlRespuesta: r?.xmlRespuesta         || null,
+      codigo:       resp?.['ns2:dCodRes'] || null,
+      mensaje:      resp?.['ns2:dMsgRes'] || null,
+      xmlRespuesta: JSON.stringify(r)     || null,
       enviadoEn,
       respondidoEn: new Date(),
       duracionMs:   Date.now() - inicio,
