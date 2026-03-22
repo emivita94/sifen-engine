@@ -4,39 +4,39 @@ import { desencriptar } from '../../shared/crypto/index.js'
 import { config } from '../../config/index.js'
 import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
-import { writeFileSync, unlinkSync } from 'fs'
+import { writeFileSync, unlinkSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
+import https from 'https'
+import axios from 'axios'
+import xml2js from 'xml2js'
 
-let _xmlgen, _xmlsign, _setapi
+let _xmlgen, _xmlsign, _pkcs12
 
 async function cargarLibrerias() {
   if (_xmlgen) return
   try {
     const modXmlgen  = await import('facturacionelectronicapy-xmlgen')
     const modXmlsign = await import('facturacionelectronicapy-xmlsign')
-    const modSetapi  = await import('facturacionelectronicapy-setapi')
+    const modPkcs12  = await import('facturacionelectronicapy-pkcs12')
     _xmlgen  = modXmlgen.default?.default  || modXmlgen.default  || modXmlgen
     _xmlsign = modXmlsign.default?.default || modXmlsign.default || modXmlsign
-    _setapi  = modSetapi.default?.default  || modSetapi.default  || modSetapi
+    _pkcs12  = modPkcs12.default?.default  || modPkcs12.default  || modPkcs12
   } catch (e) {
     throw new Error('Error cargando librerías SIFEN: ' + e.message)
   }
 }
 
-// Genera la URL del QR con todos los parámetros requeridos por SIFEN
-function generarUrlQR({ cdc, fechaEmision, rucReceptor, dvReceptor, montoTotal, montoIVA, cantItems, digestValue, idCSC, csc }) {
+function generarUrlQR({ cdc, fechaEmision, rucReceptor, montoTotal, montoIVA, cantItems, digestValue, idCSC, codigoSeg }) {
   const dFeEmiDE  = Buffer.from(fechaEmision).toString('hex')
   const dDigVal   = Buffer.from(digestValue).toString('hex')
+  const strHash   = `${cdc}${dFeEmiDE}${rucReceptor}${montoTotal}${montoIVA}${cantItems}${dDigVal}${idCSC}${codigoSeg}`
+  const cHashQR   = createHash('sha256').update(strHash).digest('hex')
 
-  // cHashQR = SHA256(CDC + dFeEmiDE_hex + dRucRec + dTotGralOpe + dTotIVA + cItems + DigestValue_hex + IdCSC + CSC)
-  const strHash = `${cdc}${dFeEmiDE}${rucReceptor}${montoTotal}${montoIVA}${cantItems}${dDigVal}${idCSC}${csc}`
-  const cHashQR = createHash('sha256').update(strHash).digest('hex')
-
-  const params = new URLSearchParams({
+  const p = new URLSearchParams({
     nVersion:    '150',
     Id:          cdc,
-    dFeEmiDE:    dFeEmiDE,
+    dFeEmiDE,
     dRucRec:     rucReceptor || '0',
     dTotGralOpe: String(montoTotal),
     dTotIVA:     String(montoIVA),
@@ -45,8 +45,7 @@ function generarUrlQR({ cdc, fechaEmision, rucReceptor, dvReceptor, montoTotal, 
     IdCSC:       idCSC || '0001',
     cHashQR,
   })
-
-  return `https://ekuatia.set.gov.py/consultas/qr?${params.toString().replace(/\+/g, '%20')}`
+  return `https://ekuatia.set.gov.py/consultas/qr?${p.toString()}`
 }
 
 export async function procesarDocumento(tenantId, payload) {
@@ -92,10 +91,9 @@ export async function procesarDocumento(tenantId, payload) {
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
   const fechaEmision     = payload.fecha ? new Date(payload.fecha) : new Date()
+  const codigoSeguridad  = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
 
-  // ── 4. Params (datos estáticos del emisor) ──────────────────────────────────
-  // Basado en el XML real válido de Chaparro:
-  // departamento=1 (CAPITAL), distrito=1 (ASUNCION), ciudad=1 (ASUNCION)
+  // ── 4. Params ───────────────────────────────────────────────────────────────
   const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
 
   const params = {
@@ -106,23 +104,23 @@ export async function procesarDocumento(tenantId, payload) {
     actividadesEconomicas: [
       { codigo: '82999', descripcion: 'OTRAS ACTIVIDADES DE SERVICIOS DE APOYO A EMPRESAS N.C.P.' },
       { codigo: '47190', descripcion: 'COMERCIO AL POR MENOR DE OTROS PRODUCTOS EN COMERCIOS NO ESPECIALIZADOS' },
-      { codigo: '96011', descripcion: 'SERVICIOS DE LAVADERÍAS DE ROPA' },
+      { codigo: '96011', descripcion: 'SERVICIOS DE LAVADERIAS DE ROPA' },
       { codigo: '56101', descripcion: 'RESTAURANTES Y PARRILLADAS' },
-      { codigo: '74909', descripcion: 'OTRAS ACTIVIDADES PROFESIONALES, CIENTÍFICAS Y TÉCNICAS N.C.P.' },
+      { codigo: '74909', descripcion: 'OTRAS ACTIVIDADES PROFESIONALES, CIENTIFICAS Y TECNICAS N.C.P.' },
     ],
     timbradoNumero:    timbrado.numeroTimbrado,
     timbradoFecha,
-    tipoContribuyente: 2,  // Persona física (según XML real)
+    tipoContribuyente: 2,
     tipoRegimen:       8,
     establecimientos: [{
       codigo:                  estCodigo,
       direccion:               'CAPITAN FIGARI E/MANUEL DOMINGUEZ Y PETTIROSSI',
       numeroCasa:              '0',
-      departamento:            1,           // CAPITAL (del XML real)
+      departamento:            1,
       departamentoDescripcion: 'CAPITAL',
-      distrito:                1,           // ASUNCION (del XML real)
+      distrito:                1,
       distritoDescripcion:     'ASUNCION (DISTRITO)',
-      ciudad:                  1,           // ASUNCION (del XML real)
+      ciudad:                  1,
       ciudadDescripcion:       'ASUNCION (DISTRITO)',
       telefono:                '0981818995',
       email:                   'jchaparrosaucedo@gmail.com',
@@ -130,102 +128,58 @@ export async function procesarDocumento(tenantId, payload) {
     }],
   }
 
-  // ── 5. Data (datos variables del documento) ─────────────────────────────────
+  // ── 5. Data ─────────────────────────────────────────────────────────────────
   const receptor        = payload.receptor || {}
-  const codigoSeguridad = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
-
   const esContribuyente = receptor.tipo === 1
   const esInnominado    = receptor.tipo === 4 || !receptor.tipo
 
-  // Estructura del receptor según XML real válido
   let clienteData = {}
   if (esInnominado) {
     clienteData = {
-      contribuyente:     false,
-      documentoTipo:     5,
-      documentoNumero:   '0',
-      razonSocial:       receptor.razonSocial || 'Sin Nombre',
-      pais:              'PRY',
-      paisDescripcion:   'Paraguay',
-      tipoContribuyente: 2,
-      tipoOperacion:     2,
-      email:             receptor.email || '',
+      contribuyente: false, documentoTipo: 5, documentoNumero: '0',
+      razonSocial: receptor.razonSocial || 'Sin Nombre',
+      pais: 'PRY', paisDescripcion: 'Paraguay',
+      tipoContribuyente: 2, tipoOperacion: 2, email: receptor.email || '',
     }
   } else if (esContribuyente) {
-    // B2B — con RUC
     const [rucRec, dvRec] = (receptor.documento || '').split('-')
     clienteData = {
-      contribuyente:     true,
-      ruc:               rucRec,
-      dv:                dvRec || '0',
-      razonSocial:       receptor.razonSocial || 'Sin Nombre',
-      pais:              'PRY',
-      paisDescripcion:   'Paraguay',
-      tipoContribuyente: 2,
-      tipoOperacion:     1,
-      email:             receptor.email || '',
-      numeroCasa:        '0',
+      contribuyente: true, ruc: rucRec, dv: dvRec || '0',
+      razonSocial: receptor.razonSocial || 'Sin Nombre',
+      pais: 'PRY', paisDescripcion: 'Paraguay',
+      tipoContribuyente: 2, tipoOperacion: 1, email: receptor.email || '', numeroCasa: '0',
     }
   } else {
-    // CI u otro documento
     clienteData = {
-      contribuyente:     false,
-      documentoTipo:     receptor.tipo === 2 ? 1 : 2,
-      documentoNumero:   receptor.documento || '0',
-      razonSocial:       receptor.razonSocial || 'Sin Nombre',
-      pais:              'PRY',
-      paisDescripcion:   'Paraguay',
-      tipoContribuyente: 2,
-      tipoOperacion:     2,
-      email:             receptor.email || '',
+      contribuyente: false,
+      documentoTipo: receptor.tipo === 2 ? 1 : 2,
+      documentoNumero: receptor.documento || '0',
+      razonSocial: receptor.razonSocial || 'Sin Nombre',
+      pais: 'PRY', paisDescripcion: 'Paraguay',
+      tipoContribuyente: 2, tipoOperacion: 2, email: receptor.email || '',
     }
   }
 
-  const items = (payload.items || []).map((item, idx) => ({
-    codigo:               String(idx + 1).padStart(3, '0'),
-    descripcion:          item.descripcion,
-    unidadMedida:         77,
-    cantidad:             item.cantidad,
-    precioUnitario:       item.precioUnitario,
-    cambio:               0,
-    descuento:            0,
-    anticipo:             0,
-    porcDescuento:        0,
-    descuentoGlobalItem:  0,
-    anticipoGlobalItem:   0,
-    ivaTipo:              1,
-    ivaBase:              100,
-    iva:                  item.tasaIVA,
-    lote:                 '',
-    vencimiento:          '',
-    numeroSerie:          '',
-    numeroPedido:         '',
-    numeroSeguimiento:    '',
-    importacion:          {},
-    dncp:                 {},
-    pais:                 'PRY',
-    paisDescripcion:      'Paraguay',
-    tolerancia:           0,
-    toleranciaCantidad:   0,
-    toleranciaPorcentaje: 0,
-    cdcAnticipo:          '',
-  }))
-
-  const montoTotal = calcularMontoTotal(payload)
-  const montoIva10 = calcularIVA10(payload)
-  const montoIva5  = calcularIVA5(payload)
+  const montoTotal  = calcularMontoTotal(payload)
+  const montoIva10  = calcularIVA10(payload)
+  const montoIva5   = calcularIVA5(payload)
   const montoExento = calcularExento(payload)
-  const montoIVA   = montoIva10 + montoIva5
+  const montoIVA    = montoIva10 + montoIva5
 
-  const condicion = {
-    tipo: 1,
-    entregas: [{
-      tipo:   1,
-      monto:  String(montoTotal),
-      moneda: payload.moneda || 'PYG',
-      cambio: 0,
-    }],
-  }
+  const items = (payload.items || []).map((item, idx) => ({
+    codigo: String(idx + 1).padStart(3, '0'),
+    descripcion: item.descripcion,
+    unidadMedida: 77, cantidad: item.cantidad,
+    precioUnitario: item.precioUnitario, cambio: 0,
+    descuento: 0, anticipo: 0, porcDescuento: 0,
+    descuentoGlobalItem: 0, anticipoGlobalItem: 0,
+    ivaTipo: 1, ivaBase: 100, iva: item.tasaIVA,
+    lote: '', vencimiento: '', numeroSerie: '',
+    numeroPedido: '', numeroSeguimiento: '',
+    importacion: {}, dncp: {},
+    pais: 'PRY', paisDescripcion: 'Paraguay',
+    tolerancia: 0, toleranciaCantidad: 0, toleranciaPorcentaje: 0, cdcAnticipo: '',
+  }))
 
   const data = {
     tipoDocumento:            tipoDoc,
@@ -240,13 +194,18 @@ export async function procesarDocumento(tenantId, payload) {
     tipoTransaccion:          payload.tipoTransaccion || 1,
     tipoImpuesto:             1,
     moneda:                   payload.moneda || 'PYG',
-    // Sin condicionAnticipo ni condicionTipoCambio — no están en el XML válido
     descuentoGlobal:          0,
     anticipoGlobal:           0,
     cambio:                   0,
     cliente:                  clienteData,
-    factura: { presencia: 1 },
-    condicion,
+    factura:                  { presencia: 1 },
+    condicion: {
+      tipo: 1,
+      entregas: [{
+        tipo: 1, monto: String(montoTotal),
+        moneda: payload.moneda || 'PYG', cambio: 0,
+      }],
+    },
     items,
   }
 
@@ -258,14 +217,12 @@ export async function procesarDocumento(tenantId, payload) {
     return respuestaError('Error generando XML del DE', err.message)
   }
 
-  // Extraer CDC del XML generado
   const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
   const cdc = cdcMatch ? cdcMatch[1] : null
   if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
 
-  // ── 7. Firmar XML ───────────────────────────────────────────────────────────
-  let xmlFirmado
-  let sifen
+  // ── 7. Firmar y enviar ──────────────────────────────────────────────────────
+  let xmlFirmado, sifen
   const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
 
   try {
@@ -273,50 +230,32 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
-   // false = usar Java (compatible con SIFEN)
-xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, false)
+    // Firmar con Node.js
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
-    if (!xmlFirmado || !xmlFirmado.includes('</Signature>')) {
+    if (!xmlFirmado?.includes('</Signature>')) {
       throw new Error('La firma digital no se generó correctamente')
     }
 
-    // Extraer DigestValue del XML firmado
+    // Extraer DigestValue para el QR
     const digestMatch = xmlFirmado.match(/<DigestValue>([^<]+)<\/DigestValue>/)
     const digestValue = digestMatch ? digestMatch[1] : ''
 
-    // Extraer datos del receptor para el QR
-    const rucRec = esContribuyente ? (receptor.documento || '').split('-')[0] : '0'
-    const dvRec  = esContribuyente ? ((receptor.documento || '').split('-')[1] || '0') : ''
-    const rucRecQR = dvRec ? `${rucRec}-${dvRec}` : rucRec
-
-    // Construir URL QR con todos los parámetros requeridos
-    const fechaStr = fechaEmision.toISOString().substring(0, 19).replace('T', 'T')
-    const urlQR = generarUrlQR({
-      cdc,
-      fechaEmision:  fechaStr,
-      rucReceptor:   rucRec,
-      montoTotal,
-      montoIVA,
-      cantItems:     items.length,
-      digestValue,
-      idCSC:         '0001',
-      csc:           codigoSeguridad,
+    // Construir URL QR
+    const rucRec   = esContribuyente ? (receptor.documento || '').split('-')[0] : '0'
+    const urlQR    = generarUrlQR({
+      cdc, fechaEmision: fechaEmision.toISOString().substring(0, 19),
+      rucReceptor: rucRec, montoTotal, montoIVA,
+      cantItems: items.length, digestValue,
+      idCSC: '0001', codigoSeg: codigoSeguridad,
     })
+    const urlQREsc = urlQR.replace(/&/g, '&amp;')
+    const gCamFuFD = `<gCamFuFD><dCarQR>${urlQREsc}</dCarQR></gCamFuFD>`
 
-    // Escapar & como &amp; para XML válido
-    const urlQREscapada = urlQR.replace(/&/g, '&amp;')
-    const gCamFuFD = `<gCamFuFD><dCarQR>${urlQREscapada}</dCarQR></gCamFuFD>`
+    // Insertar gCamFuFD después de </Signature>
+    xmlFirmado = xmlFirmado.replace(/<\/Signature>(\s*)<\/rDE>/, `</Signature>${gCamFuFD}</rDE>`)
 
-    // Insertar gCamFuFD después de </Signature> y antes de </rDE>
-    const xmlConQR = xmlFirmado.replace(/<\/Signature>(\s*)<\/rDE>/, `</Signature>${gCamFuFD}</rDE>`)
-
-    if (xmlConQR === xmlFirmado) {
-      console.error('WARN: No se pudo insertar gCamFuFD. Últimos 200 chars:', xmlFirmado.slice(-200))
-    }
-
-    xmlFirmado = xmlConQR
-
-    // Enviar a SIFEN
+    // Enviar a SIFEN con SOAP manual
     sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
@@ -378,75 +317,112 @@ xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, false)
 
 export async function cancelarDocumento(tenantId, cdc) {
   const sql = getDb()
-  const [doc] = await sql`
-    SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${tenantId}
-  `
+  const [doc] = await sql`SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${tenantId}`
   if (!doc) return respuestaError('Documento no encontrado')
   if (doc.estado !== 'aprobado') return respuestaError(`No se puede cancelar un DE en estado: ${doc.estado}`)
   const [docCancelado] = await sql`
-    UPDATE documentos SET estado = 'cancelado', actualizado_en = now()
-    WHERE id = ${doc.id} RETURNING *
+    UPDATE documentos SET estado = 'cancelado', actualizado_en = now() WHERE id = ${doc.id} RETURNING *
   `
   dispararWebhook(docCancelado, 'de.cancelado').catch(() => {})
   return respuestaDE(docCancelado)
 }
 
+// ── SOAP manual — sin pasar por normalizeXML de setapi ───────────────────────
 async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const inicio    = Date.now()
   const enviadoEn = new Date()
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
+    const url = env === 'prod'
+      ? 'https://sifen.set.gov.py/de/ws/sync/recibe.wsdl'
+      : 'https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl'
 
-    // setapi.recibe() hace split("\n").slice(1) para quitar el <?xml?>
-    // necesitamos \n después de la declaración XML
-// Formatear el XML para que no sea una sola línea
-const xmlFormateado = xmlFirmado
-  .replace('standalone="no"', 'standalone="yes"')
-  .replace(/></g, '>\n<')
+    // Abrir certificado para TLS mutuo usando PKCS12 de setapi
+    _pkcs12.openFile(certPath, certPassword)
+    const cert = _pkcs12.getCertificate()
+    const key  = _pkcs12.getPrivateKey()
 
-const xmlParaEnviar = xmlFormateado.replace(/^(<\?xml[^?]*\?>)/, '$1\n')
+    const httpsAgent = new https.Agent({
+      cert: Buffer.from(cert, 'utf8'),
+      key:  Buffer.from(key,  'utf8'),
+    })
 
+    // Quitar declaración XML (<?xml...?>) — SIFEN la rechaza dentro del SOAP
+    const xmlSinDecl = xmlFirmado.replace(/^<\?xml[^?]*\?>\s*/, '')
 
-    const r = await _setapi.recibe(
-      1,
-      xmlParaEnviar,
-      env,
-      certPath,
-      certPassword,
-      { timeout: config.sifen.timeoutMs }
-    )
+    // Construir SOAP envelope — sin normalizar, exactamente como debe ir
+    const soap = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">',
+      '<env:Header/>',
+      '<env:Body>',
+      '<rEnviDe xmlns="http://ekuatia.set.gov.py/sifen/xsd">',
+      '<dId>1</dId>',
+      `<xDE>${xmlSinDecl}</xDE>`,
+      '</rEnviDe>',
+      '</env:Body>',
+      '</env:Envelope>',
+    ].join('')
 
-    console.log('SIFEN RESPONSE:', JSON.stringify(r))
+    console.log('Enviando SOAP, length:', soap.length)
 
-    const resp       = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
+    const respuesta = await axios.post(url, soap, {
+      headers: {
+        'User-Agent':   'facturaSend',
+        'Content-Type': 'application/xml; charset=utf-8',
+      },
+      httpsAgent,
+      timeout: config.sifen.timeoutMs,
+    })
+
+    const parsed = await xml2js.parseStringPromise(respuesta.data, { explicitArray: false })
+    console.log('SIFEN RESPONSE:', JSON.stringify(parsed))
+
+    const body       = parsed?.['env:Envelope']?.['env:Body']
+    const resp       = body?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
     const primerResp = Array.isArray(resp) ? resp[0] : resp
     const aprobado   = ['0260', '0422'].includes(primerResp?.['ns2:dCodRes'])
 
-    let mensaje = null
-    if (Array.isArray(resp)) {
-      mensaje = resp.map(r => r?.['ns2:dMsgRes']).filter(Boolean).join(' | ')
-    } else {
-      mensaje = primerResp?.['ns2:dMsgRes'] || null
-    }
+    const mensaje = Array.isArray(resp)
+      ? resp.map(r => r?.['ns2:dMsgRes']).filter(Boolean).join(' | ')
+      : primerResp?.['ns2:dMsgRes'] || null
 
     return {
       aprobado,
       codigo:       primerResp?.['ns2:dCodRes'] || null,
       mensaje,
-      xmlRespuesta: JSON.stringify(r) || null,
+      xmlRespuesta: JSON.stringify(parsed) || null,
       enviadoEn,
       respondidoEn: new Date(),
       duracionMs:   Date.now() - inicio,
     }
+
   } catch (err) {
+    // Si SIFEN devuelve error HTTP, intentar parsear la respuesta
+    if (err.response?.data) {
+      console.log('SIFEN HTTP ERROR:', err.response.status, String(err.response.data).substring(0, 500))
+      try {
+        const parsed = await xml2js.parseStringPromise(err.response.data, { explicitArray: false })
+        const body       = parsed?.['env:Envelope']?.['env:Body']
+        const resp       = body?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
+        const primerResp = Array.isArray(resp) ? resp[0] : resp
+        const mensaje    = Array.isArray(resp)
+          ? resp.map(r => r?.['ns2:dMsgRes']).filter(Boolean).join(' | ')
+          : primerResp?.['ns2:dMsgRes'] || null
+        return {
+          aprobado: false,
+          codigo:   primerResp?.['ns2:dCodRes'] || 'ERR',
+          mensaje,
+          xmlRespuesta: JSON.stringify(parsed),
+          enviadoEn, respondidoEn: new Date(), duracionMs: Date.now() - inicio,
+        }
+      } catch (_) {}
+    }
+    console.error('SIFEN conexión error:', err.message)
     return {
-      aprobado:     false,
-      codigo:       'ERR',
-      mensaje:      `Error de conexión con SIFEN: ${err.message}`,
-      xmlRespuesta: null,
-      enviadoEn,
-      respondidoEn: new Date(),
-      duracionMs:   Date.now() - inicio,
+      aprobado: false, codigo: 'ERR',
+      mensaje: `Error de conexión con SIFEN: ${err.message}`,
+      xmlRespuesta: null, enviadoEn, respondidoEn: new Date(), duracionMs: Date.now() - inicio,
     }
   }
 }
