@@ -220,7 +220,7 @@ export async function procesarDocumento(tenantId, payload) {
 const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${cdc}`
 const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
 
-xmlFirmado = xmlFirmado.replace('</rDE>', `${gCamFuFD}</rDE>`)
+xmlFirmado = xmlFirmado.replace('</Signature></rDE>', `</Signature>${gCamFuFD}</rDE>`)
     sifen      = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
