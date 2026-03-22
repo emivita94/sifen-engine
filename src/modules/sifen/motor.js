@@ -215,14 +215,15 @@ export async function procesarDocumento(tenantId, payload) {
     writeFileSync(tmpCert, certBuffer)
 
 
-    // Agregar gCamFuFD ANTES de firmar
+  // Firmar primero
+xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+
+// Agregar gCamFuFD DESPUÉS de la firma
 const urlQR = `https://ekuatia.set.gov.py/consultas/qr?nVersion=150&amp;Id=${cdc}`
 const gCamFuFD = `<gCamFuFD><dCarQR>${urlQR}</dCarQR></gCamFuFD>`
-const xmlConQR = xmlGenerado.replace('</rDE>', `${gCamFuFD}</rDE>`)
+xmlFirmado = xmlFirmado.replace('</Signature></rDE>', `</Signature>${gCamFuFD}</rDE>`)
 
-// Firmar el XML ya con gCamFuFD incluido
-xmlFirmado = await _xmlsign.signXML(xmlConQR, tmpCert, certPassword, true)
-sifen      = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
+sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
     return respuestaError('Error firmando o enviando el DE', err.message)
