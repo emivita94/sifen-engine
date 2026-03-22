@@ -217,7 +217,7 @@ ciudadDescripcion:       'ASUNCION (DISTRITO)',
   let xmlFirmado
   try {
     const certBuffer = desencriptar(tenant.certificadoEnc)
-    xmlFirmado = await _xmlsign.signXML(xmlGenerado, certBuffer, tenant.certAlias || '', '')
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, certBuffer, tenant.certAlias || '', true)
   } catch (err) {
     return respuestaError('Error firmando el XML con el certificado digital', err.message)
   }
