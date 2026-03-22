@@ -1,7 +1,6 @@
 // src/modules/sifen/motor.js
 import { getDb } from '../../db/connection.js'
 import { desencriptar } from '../../shared/crypto/index.js'
-import { generarCDC } from '../../shared/utils/cdc.js'
 import { config } from '../../config/index.js'
 import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
@@ -67,24 +66,7 @@ export async function procesarDocumento(tenantId, payload) {
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
 
-  // ── 4. CDC ──────────────────────────────────────────────────────────────────
-  const [rucBase, dvRuc] = tenant.ruc.split('-')
-  const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date()
-
-  const cdc = generarCDC({
-    tipoDE:          tipoDoc,
-    rucEmisor:       rucBase,
-    dvEmisor:        dvRuc || '0',
-    establecimiento: estCodigo,
-    puntoExpedicion: puntoCodigo,
-    numero:          numeroSecuencia,
-    tipoTransaccion: payload.tipoTransaccion || 1,
-    numeroTimbrado:  timbrado.numeroTimbrado,
-    fechaEmision,
-    ambiente:        tenant.ambiente === 'prod' ? 1 : 2,
-  })
-
-  // ── 5. Params (datos estáticos del emisor) ──────────────────────────────────
+  // ── 4. Params (datos estáticos del emisor para xmlgen) ──────────────────────
   const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
   const depCodigo = timbrado.departamentoCodigo || 11
 
@@ -114,9 +96,10 @@ export async function procesarDocumento(tenantId, payload) {
     }],
   }
 
-  // ── 6. Data (datos variables del documento) ─────────────────────────────────
+  // ── 5. Data (datos variables del documento para xmlgen) ─────────────────────
   const receptor = payload.receptor || {}
   const codigoSeguridad = (tenant.codigoSeguridad || '000000000').toString().padStart(9, '0').substring(0, 9)
+  const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date()
 
   const esContribuyente = receptor.tipo === 1
   const esInnominado    = receptor.tipo === 4 || !receptor.tipo
@@ -198,18 +181,25 @@ export async function procesarDocumento(tenantId, payload) {
     factura: { presencia: 1 },
     condicion,
     items,
+    // NO pasamos cdc — xmlgen lo genera internamente
   }
 
-  // ── 7. Generar XML ──────────────────────────────────────────────────────────
+  // ── 6. Generar XML ──────────────────────────────────────────────────────────
   let xmlGenerado
   try {
     xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
-    console.log('XML GENERADO (primeros 500 chars):', xmlGenerado?.substring(0, 500))
+
+    // Extraer CDC real del XML generado por la librería
   } catch (err) {
     return respuestaError('Error generando XML del DE', err.message)
   }
 
-  // ── 8. Firmar XML y enviar a SIFEN ──────────────────────────────────────────
+  // Extraer CDC del atributo Id del XML
+  const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
+  const cdc = cdcMatch ? cdcMatch[1] : null
+  if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
+
+  // ── 7. Firmar XML y enviar a SIFEN ──────────────────────────────────────────
   let xmlFirmado
   let sifen
   const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
@@ -218,12 +208,8 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
-    // Firmar con Node.js puro (true = sin Java)
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
-    console.log('XML FIRMADO (primeros 200 chars):', xmlFirmado?.substring(0, 200))
-
-    // Enviar a SIFEN
-    sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
+    sifen      = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
     return respuestaError('Error firmando o enviando el DE', err.message)
@@ -233,7 +219,7 @@ export async function procesarDocumento(tenantId, payload) {
 
   const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
 
-  // ── 9. Persistir ────────────────────────────────────────────────────────────
+  // ── 8. Persistir ────────────────────────────────────────────────────────────
   const montoTotal  = calcularMontoTotal(payload)
   const montoIva10  = calcularIVA10(payload)
   const montoIva5   = calcularIVA5(payload)
@@ -258,7 +244,7 @@ export async function procesarDocumento(tenantId, payload) {
     ) RETURNING *
   `
 
-  // ── 10. Actualizar con respuesta SIFEN ──────────────────────────────────────
+  // ── 9. Actualizar con respuesta SIFEN ───────────────────────────────────────
   const [docFinal] = await sql`
     UPDATE documentos SET
       xml_aprobado  = ${sifen.xmlRespuesta || null},
@@ -269,7 +255,7 @@ export async function procesarDocumento(tenantId, payload) {
     WHERE id = ${doc.id} RETURNING *
   `
 
-  // ── 11. Log ─────────────────────────────────────────────────────────────────
+  // ── 10. Log ─────────────────────────────────────────────────────────────────
   await sql`
     INSERT INTO sifen_logs (
       documento_id, tenant_id, accion,
@@ -314,7 +300,6 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
     )
     console.log('SIFEN RESPONSE:', JSON.stringify(r))
 
-    // Parsear respuesta del endpoint recibe (síncrono)
     const resp     = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
     const aprobado = ['0260', '0422'].includes(resp?.['ns2:dCodRes'])
     return {
