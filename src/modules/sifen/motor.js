@@ -291,13 +291,13 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
     const r = await _setapi.recibe(
-      1,
-      xmlFirmado,
-      env,
-      certPath,
-      certPassword,
-      { timeout: config.sifen.timeoutMs }
-    )
+  1,
+  xmlFirmado,
+  env,
+  certPath,
+  certPassword,
+  { timeout: config.sifen.timeoutMs, debug: true }
+)
     console.log('SIFEN RESPONSE:', JSON.stringify(r))
 
     const resp     = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
