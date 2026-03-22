@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-  "start": "apt-get install -y -q default-jre-headless 2>/dev/null; node src/index.js",
+  "start": "apt-get install -y -q default-jre-headless 2>/dev/null; export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64; node src/index.js",
   "dev": "node --watch src/index.js"
 },
   "dependencies": {
