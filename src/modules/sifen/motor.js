@@ -302,9 +302,9 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const enviadoEn = new Date()
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
-  const r = await _setapi.recibeLote(
+  const r = await _setapi.recibe(
   1,
-  [xmlFirmado],
+  xmlFirmado,   // string, no array
   env,
   certPath,
   certPassword,
