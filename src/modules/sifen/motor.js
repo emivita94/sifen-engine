@@ -4,72 +4,30 @@ import { desencriptar } from '../../shared/crypto/index.js'
 import { config } from '../../config/index.js'
 import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
-import { writeFileSync, unlinkSync, readFileSync } from 'fs'
+import { writeFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
-import { createHash } from 'crypto'
-import https from 'https'
-import axios from 'axios'
-import xml2js from 'xml2js'
 
-let _xmlgen, _xmlsign
+let _xmlgen, _xmlsign, _setapi, _qrgen
 
 async function cargarLibrerias() {
   if (_xmlgen) return
   try {
     const modXmlgen  = await import('facturacionelectronicapy-xmlgen')
     const modXmlsign = await import('facturacionelectronicapy-xmlsign')
+    const modSetapi  = await import('facturacionelectronicapy-setapi')
+    const modQrgen   = await import('facturacionelectronicapy-qrgen')
     _xmlgen  = modXmlgen.default?.default  || modXmlgen.default  || modXmlgen
     _xmlsign = modXmlsign.default?.default || modXmlsign.default || modXmlsign
+    _setapi  = modSetapi.default?.default  || modSetapi.default  || modSetapi
+    _qrgen   = modQrgen.default?.default   || modQrgen.default   || modQrgen
   } catch (e) {
     throw new Error('Error cargando librerías SIFEN: ' + e.message)
   }
 }
 
-// Extrae cert PEM y key PEM de un archivo .p12 usando node-forge (ESM)
-async function extraerCertKey(certPath, password) {
-  const forgeModule = await import('node-forge')
-  const forge = forgeModule.default || forgeModule
-  const p12Der  = readFileSync(certPath).toString('binary')
-  const p12Asn1 = forge.asn1.fromDer(p12Der)
-  const p12     = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password)
-
-  let certPem = ''
-  let keyPem  = ''
-
-  for (const safeContent of p12.safeContents) {
-    for (const safeBag of safeContent.safeBags) {
-      if (safeBag.type === forge.pki.oids.certBag) {
-        certPem = forge.pki.certificateToPem(safeBag.cert)
-      }
-      if (safeBag.type === forge.pki.oids.pkcs8ShroudedKeyBag ||
-          safeBag.type === forge.pki.oids.keyBag) {
-        keyPem = forge.pki.privateKeyToPem(safeBag.key)
-      }
-    }
-  }
-  return { certPem, keyPem }
-}
-
-function generarUrlQR({ cdc, fechaEmision, rucReceptor, montoTotal, montoIVA, cantItems, digestValue, idCSC, codigoSeg }) {
-  const dFeEmiDE  = Buffer.from(fechaEmision).toString('hex')
-  const dDigVal   = Buffer.from(digestValue).toString('hex')
-  const strHash   = `${cdc}${dFeEmiDE}${rucReceptor}${montoTotal}${montoIVA}${cantItems}${dDigVal}${idCSC}${codigoSeg}`
-  const cHashQR   = createHash('sha256').update(strHash).digest('hex')
-
-  const p = new URLSearchParams({
-    nVersion:    '150',
-    Id:          cdc,
-    dFeEmiDE,
-    dRucRec:     rucReceptor || '0',
-    dTotGralOpe: String(montoTotal),
-    dTotIVA:     String(montoIVA),
-    cItems:      String(cantItems),
-    DigestValue: dDigVal,
-    IdCSC:       idCSC || '0001',
-    cHashQR,
-  })
-  return `https://ekuatia.set.gov.py/consultas/qr?${p.toString()}`
-}
+// CSC del contribuyente Chaparro — registrado en SIFEN
+// TODO: guardar por tenant en BD (columna csc)
+const CSC_CHAPARRO = 'A188874CD1a26636f192F24eF88cE4F4'
 
 export async function procesarDocumento(tenantId, payload) {
   await cargarLibrerias()
@@ -187,7 +145,6 @@ export async function procesarDocumento(tenantId, payload) {
   const montoIva10  = calcularIVA10(payload)
   const montoIva5   = calcularIVA5(payload)
   const montoExento = calcularExento(payload)
-  const montoIVA    = montoIva10 + montoIva5
 
   const items = (payload.items || []).map((item, idx) => ({
     codigo: String(idx + 1).padStart(3, '0'),
@@ -244,7 +201,7 @@ export async function procesarDocumento(tenantId, payload) {
   const cdc = cdcMatch ? cdcMatch[1] : null
   if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
 
-  // ── 7. Firmar y enviar ──────────────────────────────────────────────────────
+  // ── 7. Firmar + QR + Enviar ─────────────────────────────────────────────────
   let xmlFirmado, sifen
   const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
 
@@ -253,36 +210,22 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
-    // Firmar con Node.js
+    // Paso 1: Firmar
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
-
     if (!xmlFirmado?.includes('</Signature>')) {
       throw new Error('La firma digital no se generó correctamente')
     }
 
-    // Extraer DigestValue para el QR
-    const digestMatch = xmlFirmado.match(/<DigestValue>([^<]+)<\/DigestValue>/)
-    const digestValue = digestMatch ? digestMatch[1] : ''
+    // Paso 2: Agregar QR con la librería qrgen (usa CSC real para calcular cHashQR)
+    const env = tenant.ambiente === 'prod' ? 'prod' : 'test'
+    xmlFirmado = await _qrgen.generateQR(xmlFirmado, '0001', CSC_CHAPARRO, env)
+    console.log('XML con QR generado, length:', xmlFirmado?.length)
 
-    // Construir URL QR
-    const rucRec   = esContribuyente ? (receptor.documento || '').split('-')[0] : '0'
-    const urlQR    = generarUrlQR({
-      cdc, fechaEmision: fechaEmision.toISOString().substring(0, 19),
-      rucReceptor: rucRec, montoTotal, montoIVA,
-      cantItems: items.length, digestValue,
-      idCSC: '0001', codigoSeg: codigoSeguridad,
-    })
-    const urlQREsc = urlQR.replace(/&/g, '&amp;')
-    const gCamFuFD = `<gCamFuFD><dCarQR>${urlQREsc}</dCarQR></gCamFuFD>`
-
-    // Insertar gCamFuFD después de </Signature>
-    xmlFirmado = xmlFirmado.replace(/<\/Signature>(\s*)<\/rDE>/, `</Signature>${gCamFuFD}</rDE>`)
-
-    // Enviar a SIFEN con SOAP manual
+    // Paso 3: Enviar a SIFEN
     sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
-    return respuestaError('Error firmando o enviando el DE', err.message)
+    return respuestaError('Error firmando, generando QR o enviando el DE', err.message)
   } finally {
     try { unlinkSync(tmpCert) } catch (e) {}
   }
@@ -350,57 +293,27 @@ export async function cancelarDocumento(tenantId, cdc) {
   return respuestaDE(docCancelado)
 }
 
-// ── SOAP manual — sin pasar por normalizeXML de setapi ───────────────────────
 async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   const inicio    = Date.now()
   const enviadoEn = new Date()
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
-    const url = env === 'prod'
-      ? 'https://sifen.set.gov.py/de/ws/sync/recibe.wsdl'
-      : 'https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl'
 
-    // Extraer cert y key del .p12 usando node-forge
-    const { certPem, keyPem } = await extraerCertKey(certPath, certPassword)
+    // Agregar \n después de <?xml?> para que setapi.recibe() pueda hacer split correctamente
+    const xmlParaEnviar = xmlFirmado.replace(/^(<\?xml[^?]*\?>)/, '$1\n')
 
-    const httpsAgent = new https.Agent({
-      cert: certPem,
-      key:  keyPem,
-    })
+    const r = await _setapi.recibe(
+      1,
+      xmlParaEnviar,
+      env,
+      certPath,
+      certPassword,
+      { timeout: config.sifen.timeoutMs }
+    )
 
-    // Quitar declaración XML (<?xml...?>) — SIFEN la rechaza dentro del SOAP
-    const xmlSinDecl = xmlFirmado.replace(/^<\?xml[^?]*\?>\s*/, '')
+    console.log('SIFEN RESPONSE:', JSON.stringify(r))
 
-    // Construir SOAP envelope — sin normalizar, exactamente como debe ir
-    const soap = [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">',
-      '<env:Header/>',
-      '<env:Body>',
-      '<rEnviDe xmlns="http://ekuatia.set.gov.py/sifen/xsd">',
-      '<dId>1</dId>',
-      `<xDE>${xmlSinDecl}</xDE>`,
-      '</rEnviDe>',
-      '</env:Body>',
-      '</env:Envelope>',
-    ].join('')
-
-    console.log('Enviando SOAP, length:', soap.length)
-
-    const respuesta = await axios.post(url, soap, {
-      headers: {
-        'User-Agent':   'facturaSend',
-        'Content-Type': 'application/xml; charset=utf-8',
-      },
-      httpsAgent,
-      timeout: config.sifen.timeoutMs,
-    })
-
-    const parsed = await xml2js.parseStringPromise(respuesta.data, { explicitArray: false })
-    console.log('SIFEN RESPONSE:', JSON.stringify(parsed))
-
-    const body       = parsed?.['env:Envelope']?.['env:Body']
-    const resp       = body?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
+    const resp       = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
     const primerResp = Array.isArray(resp) ? resp[0] : resp
     const aprobado   = ['0260', '0422'].includes(primerResp?.['ns2:dCodRes'])
 
@@ -412,34 +325,12 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
       aprobado,
       codigo:       primerResp?.['ns2:dCodRes'] || null,
       mensaje,
-      xmlRespuesta: JSON.stringify(parsed) || null,
+      xmlRespuesta: JSON.stringify(r) || null,
       enviadoEn,
       respondidoEn: new Date(),
       duracionMs:   Date.now() - inicio,
     }
-
   } catch (err) {
-    // Si SIFEN devuelve error HTTP, intentar parsear la respuesta
-    if (err.response?.data) {
-      console.log('SIFEN HTTP ERROR:', err.response.status, String(err.response.data).substring(0, 500))
-      try {
-        const parsed = await xml2js.parseStringPromise(err.response.data, { explicitArray: false })
-        const body       = parsed?.['env:Envelope']?.['env:Body']
-        const resp       = body?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
-        const primerResp = Array.isArray(resp) ? resp[0] : resp
-        const mensaje    = Array.isArray(resp)
-          ? resp.map(r => r?.['ns2:dMsgRes']).filter(Boolean).join(' | ')
-          : primerResp?.['ns2:dMsgRes'] || null
-        return {
-          aprobado: false,
-          codigo:   primerResp?.['ns2:dCodRes'] || 'ERR',
-          mensaje,
-          xmlRespuesta: JSON.stringify(parsed),
-          enviadoEn, respondidoEn: new Date(), duracionMs: Date.now() - inicio,
-        }
-      } catch (_) {}
-    }
-    console.error('SIFEN conexión error:', err.message)
     return {
       aprobado: false, codigo: 'ERR',
       mensaje: `Error de conexión con SIFEN: ${err.message}`,
