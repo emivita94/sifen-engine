@@ -25,12 +25,13 @@ async function cargarLibrerias() {
   }
 }
 
-// Extrae cert PEM y key PEM de un archivo .p12 usando node-forge
-function extraerCertKey(certPath, password) {
-  const forge = require('node-forge')
-  const p12Der = readFileSync(certPath).toString('binary')
+// Extrae cert PEM y key PEM de un archivo .p12 usando node-forge (ESM)
+async function extraerCertKey(certPath, password) {
+  const forgeModule = await import('node-forge')
+  const forge = forgeModule.default || forgeModule
+  const p12Der  = readFileSync(certPath).toString('binary')
   const p12Asn1 = forge.asn1.fromDer(p12Der)
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password)
+  const p12     = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password)
 
   let certPem = ''
   let keyPem  = ''
@@ -360,7 +361,7 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
       : 'https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl'
 
     // Extraer cert y key del .p12 usando node-forge
-    const { certPem, keyPem } = extraerCertKey(certPath, certPassword)
+    const { certPem, keyPem } = await extraerCertKey(certPath, certPassword)
 
     const httpsAgent = new https.Agent({
       cert: certPem,
