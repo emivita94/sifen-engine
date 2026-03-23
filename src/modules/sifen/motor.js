@@ -216,11 +216,14 @@ export async function procesarDocumento(tenantId, payload) {
   console.log('HORA ASUNCION:', new Date().toLocaleString('es-PY', { timeZone: 'America/Asuncion' }))
   console.log('UTC OFFSET:', -ahora.getTimezoneOffset()/60, 'horas')
 
-    // Paso 1: Firmar
-    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
-    if (!xmlFirmado?.includes('</Signature>')) {
-      throw new Error('La firma digital no se generó correctamente')
-    }
+    // Firmar con Node.js
+// Ajustar dFecFirma al horario de Paraguay (UTC-3) antes de firmar
+xmlGenerado = xmlGenerado.replace(
+  /<dFecFirma>[^<]+<\/dFecFirma>/,
+  `<dFecFirma>${new Date(Date.now() - 3*60*60*1000).toISOString().substring(0,19)}</dFecFirma>`
+)
+
+xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
     // Paso 2: Agregar QR con la librería qrgen (usa CSC real para calcular cHashQR)
     const env = tenant.ambiente === 'prod' ? 'prod' : 'test'
