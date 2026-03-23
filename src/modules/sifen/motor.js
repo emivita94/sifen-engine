@@ -4,7 +4,7 @@ import { desencriptar } from '../../shared/crypto/index.js'
 import { config } from '../../config/index.js'
 import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
-import { writeFileSync, unlinkSync } from 'fs'
+import { writeFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
 
 let _xmlgen, _xmlsign, _setapi, _qrgen
@@ -25,6 +25,11 @@ async function cargarLibrerias() {
   }
 }
 
+// Paraguay = UTC-3
+function ahoraParaguay() {
+  return new Date(Date.now() - 3 * 60 * 60 * 1000)
+}
+
 export async function procesarDocumento(tenantId, payload) {
   await cargarLibrerias()
   const sql = getDb()
@@ -35,14 +40,14 @@ export async function procesarDocumento(tenantId, payload) {
            codigo_seguridad, cert_password,
            direccion, numero_casa, departamento, departamento_desc,
            distrito, distrito_desc, ciudad, ciudad_desc,
-           telefono, email, denominacion, csc,
+           telefono, email, denominacion, csc, id_csc,
            actividades_economicas, tipo_contribuyente, tipo_regimen,
            nombre_fantasia
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
   if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
-  if (!tenant.csc)            return respuestaError('El tenant no tiene CSC (código de seguridad) configurado')
+  if (!tenant.csc)            return respuestaError('El tenant no tiene CSC configurado')
   if (!tenant.direccion)      return respuestaError('El tenant no tiene dirección configurada')
 
   // ── 2. Timbrado activo ──────────────────────────────────────────────────────
@@ -74,14 +79,13 @@ export async function procesarDocumento(tenantId, payload) {
   const estCodigo        = timbrado.estCodigo.toString().padStart(3, '0')
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
-  const fechaEmision     = payload.fecha ? new Date(payload.fecha) : new Date(Date.now() - 3*60*60*1000)
+  const fechaEmision     = payload.fecha ? new Date(payload.fecha) : ahoraParaguay()
   const codigoSeguridad  = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
+  const idCSC            = tenant.idCsc || '0001'
 
-  // ── 4. Params — todo desde BD ───────────────────────────────────────────────
+  // ── 4. Params ───────────────────────────────────────────────────────────────
   const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
 
-  // Actividades económicas: vienen de la BD como JSONB
-  // Formato esperado: [{ codigo: "82999", descripcion: "..." }, ...]
   const actividadesEconomicas = Array.isArray(tenant.actividadesEconomicas) && tenant.actividadesEconomicas.length > 0
     ? tenant.actividadesEconomicas
     : [{ codigo: '00000', descripcion: 'SIN ACTIVIDAD CONFIGURADA' }]
@@ -213,27 +217,25 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || ''
     writeFileSync(tmpCert, certBuffer)
 
-    // Log hora del servidor
-    const ahora = new Date()
-    console.log('HORA SERVIDOR:', ahora.toISOString())
-    console.log('HORA ASUNCION:', new Date().toLocaleString('es-PY', { timeZone: 'America/Asuncion' }))
-    console.log('UTC OFFSET:', -ahora.getTimezoneOffset()/60, 'horas')
-
     // Ajustar dFecFirma al horario de Paraguay (UTC-3) antes de firmar
     xmlGenerado = xmlGenerado.replace(
       /<dFecFirma>[^<]+<\/dFecFirma>/,
-      `<dFecFirma>${new Date(Date.now() - 3*60*60*1000).toISOString().substring(0,19)}</dFecFirma>`
+      `<dFecFirma>${ahoraParaguay().toISOString().substring(0, 19)}</dFecFirma>`
     )
 
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
-    // Agregar QR usando el CSC del tenant desde BD
+    if (!xmlFirmado?.includes('</Signature>')) {
+      throw new Error('La firma digital no se generó correctamente')
+    }
+
+    // Agregar QR con idCSC y CSC del tenant
     const env = tenant.ambiente === 'prod' ? 'prod' : 'test'
-    xmlFirmado = await _qrgen.generateQR(xmlFirmado, '0001', tenant.csc, env)
+    xmlFirmado = await _qrgen.generateQR(xmlFirmado, idCSC, tenant.csc, env)
     console.log('XML con QR generado, length:', xmlFirmado?.length)
 
-    // Enviar a SIFEN
-    sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
+    // Enviar a SIFEN (o guardar en modo debug)
+    sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword, cdc)
 
   } catch (err) {
     return respuestaError('Error firmando, generando QR o enviando el DE', err.message)
@@ -304,13 +306,44 @@ export async function cancelarDocumento(tenantId, cdc) {
   return respuestaDE(docCancelado)
 }
 
-async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
+// ── Enviar a SIFEN ────────────────────────────────────────────────────────────
+async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = '') {
   const inicio    = Date.now()
   const enviadoEn = new Date()
+
+  // ── MODO DEBUG: agregar SKIP_SIFEN=true en Railway Variables ─────────────
+  // El XML se guarda en /tmp/preview/ y se imprime completo en los logs
+  // Desactivar quitando la variable o poniendo SKIP_SIFEN=false
+  if (process.env.SKIP_SIFEN === 'true') {
+    try {
+      mkdirSync('/tmp/preview', { recursive: true })
+      const filename = `DE_${cdc || Date.now()}.xml`
+      const filepath = join('/tmp/preview', filename)
+      writeFileSync(filepath, xmlFirmado, 'utf8')
+      console.log('=== SKIP_SIFEN ACTIVO — XML NO ENVIADO A SIFEN ===')
+      console.log('Archivo:', filepath)
+      console.log('=== XML COMPLETO ===')
+      console.log(xmlFirmado)
+      console.log('=== FIN XML ===')
+    } catch (e) {
+      console.error('Error guardando preview:', e.message)
+    }
+    return {
+      aprobado:     false,
+      codigo:       'SKIP',
+      mensaje:      'SKIP_SIFEN activo — XML generado y logueado sin enviar a SIFEN',
+      xmlRespuesta: null,
+      enviadoEn,
+      respondidoEn: new Date(),
+      duracionMs:   Date.now() - inicio,
+    }
+  }
+
+  // ── ENVÍO REAL A SIFEN ────────────────────────────────────────────────────
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
 
-    // Agregar \n después de <?xml?> para que setapi.recibe() pueda hacer split correctamente
+    // setapi.recibe() hace split("\n").slice(1) para quitar el <?xml?>
     const xmlParaEnviar = xmlFirmado.replace(/^(<\?xml[^?]*\?>)/, '$1\n')
 
     const r = await _setapi.recibe(
@@ -350,6 +383,7 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword) {
   }
 }
 
+// ── Cálculos ──────────────────────────────────────────────────────────────────
 const sum = (items, fn) => items.reduce((s, i) => s + (fn(i) || 0), 0)
 function calcularMontoTotal(p) { return p.montoTotal  ?? sum(p.items || [], i => i.precioTotal) }
 function calcularIVA10(p)      { return p.montoIVA10  ?? sum((p.items||[]).filter(i=>i.tasaIVA===10), i=>Math.round(i.precioTotal*10/110)) }
