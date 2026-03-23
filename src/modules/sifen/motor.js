@@ -71,7 +71,7 @@ export async function procesarDocumento(tenantId, payload) {
   const estCodigo        = timbrado.estCodigo.toString().padStart(3, '0')
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
-  const fechaEmision     = payload.fecha ? new Date(payload.fecha) : new Date()
+  const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date(Date.now() - 3*60*60*1000)
   const codigoSeguridad  = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
 
   // ── 4. Params ───────────────────────────────────────────────────────────────
