@@ -25,10 +25,6 @@ async function cargarLibrerias() {
   }
 }
 
-// CSC del contribuyente Chaparro — registrado en SIFEN
-// TODO: guardar por tenant en BD (columna csc)
-const CSC_CHAPARRO = 'A188874CD1a26636f192F24eF88cE4F4'
-
 export async function procesarDocumento(tenantId, payload) {
   await cargarLibrerias()
   const sql = getDb()
@@ -36,11 +32,18 @@ export async function procesarDocumento(tenantId, payload) {
   // ── 1. Tenant ───────────────────────────────────────────────────────────────
   const [tenant] = await sql`
     SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias,
-           codigo_seguridad, cert_password
+           codigo_seguridad, cert_password,
+           direccion, numero_casa, departamento, departamento_desc,
+           distrito, distrito_desc, ciudad, ciudad_desc,
+           telefono, email, denominacion, csc,
+           actividades_economicas, tipo_contribuyente, tipo_regimen,
+           nombre_fantasia
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
   if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
+  if (!tenant.csc)            return respuestaError('El tenant no tiene CSC (código de seguridad) configurado')
+  if (!tenant.direccion)      return respuestaError('El tenant no tiene dirección configurada')
 
   // ── 2. Timbrado activo ──────────────────────────────────────────────────────
   const tipoDoc = payload.tipoDocumento || 1
@@ -71,41 +74,41 @@ export async function procesarDocumento(tenantId, payload) {
   const estCodigo        = timbrado.estCodigo.toString().padStart(3, '0')
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
-  const fechaEmision = payload.fecha ? new Date(payload.fecha) : new Date(Date.now() - 3*60*60*1000)
+  const fechaEmision     = payload.fecha ? new Date(payload.fecha) : new Date(Date.now() - 3*60*60*1000)
   const codigoSeguridad  = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
 
-  // ── 4. Params ───────────────────────────────────────────────────────────────
+  // ── 4. Params — todo desde BD ───────────────────────────────────────────────
   const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
 
+  // Actividades económicas: vienen de la BD como JSONB
+  // Formato esperado: [{ codigo: "82999", descripcion: "..." }, ...]
+  const actividadesEconomicas = Array.isArray(tenant.actividadesEconomicas) && tenant.actividadesEconomicas.length > 0
+    ? tenant.actividadesEconomicas
+    : [{ codigo: '00000', descripcion: 'SIN ACTIVIDAD CONFIGURADA' }]
+
   const params = {
-    version:           150,
-    ruc:               tenant.ruc,
-    razonSocial:       tenant.razonSocial,
-    nombreFantasia:    tenant.razonSocial,
-    actividadesEconomicas: [
-      { codigo: '82999', descripcion: 'OTRAS ACTIVIDADES DE SERVICIOS DE APOYO A EMPRESAS N.C.P.' },
-      { codigo: '47190', descripcion: 'COMERCIO AL POR MENOR DE OTROS PRODUCTOS EN COMERCIOS NO ESPECIALIZADOS' },
-      { codigo: '96011', descripcion: 'SERVICIOS DE LAVADERIAS DE ROPA' },
-      { codigo: '56101', descripcion: 'RESTAURANTES Y PARRILLADAS' },
-      { codigo: '74909', descripcion: 'OTRAS ACTIVIDADES PROFESIONALES, CIENTIFICAS Y TECNICAS N.C.P.' },
-    ],
-    timbradoNumero:    timbrado.numeroTimbrado,
+    version:               150,
+    ruc:                   tenant.ruc,
+    razonSocial:           tenant.razonSocial,
+    nombreFantasia:        tenant.nombreFantasia || tenant.razonSocial,
+    actividadesEconomicas,
+    timbradoNumero:        timbrado.numeroTimbrado,
     timbradoFecha,
-    tipoContribuyente: 2,
-    tipoRegimen:       8,
+    tipoContribuyente:     tenant.tipoContribuyente || 2,
+    tipoRegimen:           tenant.tipoRegimen       || 8,
     establecimientos: [{
       codigo:                  estCodigo,
-      direccion:               'CAPITAN FIGARI E/MANUEL DOMINGUEZ Y PETTIROSSI',
-      numeroCasa:              '0',
-      departamento:            1,
-      departamentoDescripcion: 'CAPITAL',
-      distrito:                1,
-      distritoDescripcion:     'ASUNCION (DISTRITO)',
-      ciudad:                  1,
-      ciudadDescripcion:       'ASUNCION (DISTRITO)',
-      telefono:                '0981818995',
-      email:                   'jchaparrosaucedo@gmail.com',
-      denominacion:            'Sucursal 1',
+      direccion:               tenant.direccion        || '',
+      numeroCasa:              tenant.numeroCasa       || '0',
+      departamento:            tenant.departamento     || 1,
+      departamentoDescripcion: tenant.departamentoDesc || 'CAPITAL',
+      distrito:                tenant.distrito         || 1,
+      distritoDescripcion:     tenant.distritoDesc     || 'ASUNCION (DISTRITO)',
+      ciudad:                  tenant.ciudad           || 1,
+      ciudadDescripcion:       tenant.ciudadDesc       || 'ASUNCION (DISTRITO)',
+      telefono:                tenant.telefono         || '',
+      email:                   tenant.email            || '',
+      denominacion:            tenant.denominacion     || '',
     }],
   }
 
@@ -207,30 +210,29 @@ export async function procesarDocumento(tenantId, payload) {
 
   try {
     const certBuffer   = desencriptar(tenant.certificadoEnc)
-    const certPassword = tenant.certPassword || '12345678'
+    const certPassword = tenant.certPassword || ''
     writeFileSync(tmpCert, certBuffer)
 
-    // LOG HORA DEL SERVIDOR
-  const ahora = new Date()
-  console.log('HORA SERVIDOR:', ahora.toISOString())
-  console.log('HORA ASUNCION:', new Date().toLocaleString('es-PY', { timeZone: 'America/Asuncion' }))
-  console.log('UTC OFFSET:', -ahora.getTimezoneOffset()/60, 'horas')
+    // Log hora del servidor
+    const ahora = new Date()
+    console.log('HORA SERVIDOR:', ahora.toISOString())
+    console.log('HORA ASUNCION:', new Date().toLocaleString('es-PY', { timeZone: 'America/Asuncion' }))
+    console.log('UTC OFFSET:', -ahora.getTimezoneOffset()/60, 'horas')
 
-    // Firmar con Node.js
-// Ajustar dFecFirma al horario de Paraguay (UTC-3) antes de firmar
-xmlGenerado = xmlGenerado.replace(
-  /<dFecFirma>[^<]+<\/dFecFirma>/,
-  `<dFecFirma>${new Date(Date.now() - 3*60*60*1000).toISOString().substring(0,19)}</dFecFirma>`
-)
+    // Ajustar dFecFirma al horario de Paraguay (UTC-3) antes de firmar
+    xmlGenerado = xmlGenerado.replace(
+      /<dFecFirma>[^<]+<\/dFecFirma>/,
+      `<dFecFirma>${new Date(Date.now() - 3*60*60*1000).toISOString().substring(0,19)}</dFecFirma>`
+    )
 
-xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
-    // Paso 2: Agregar QR con la librería qrgen (usa CSC real para calcular cHashQR)
+    // Agregar QR usando el CSC del tenant desde BD
     const env = tenant.ambiente === 'prod' ? 'prod' : 'test'
-    xmlFirmado = await _qrgen.generateQR(xmlFirmado, '0001', CSC_CHAPARRO, env)
+    xmlFirmado = await _qrgen.generateQR(xmlFirmado, '0001', tenant.csc, env)
     console.log('XML con QR generado, length:', xmlFirmado?.length)
 
-    // Paso 3: Enviar a SIFEN
+    // Enviar a SIFEN
     sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword)
 
   } catch (err) {
