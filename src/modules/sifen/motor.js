@@ -210,6 +210,12 @@ export async function procesarDocumento(tenantId, payload) {
     const certPassword = tenant.certPassword || '12345678'
     writeFileSync(tmpCert, certBuffer)
 
+    // LOG HORA DEL SERVIDOR
+  const ahora = new Date()
+  console.log('HORA SERVIDOR:', ahora.toISOString())
+  console.log('HORA ASUNCION:', new Date().toLocaleString('es-PY', { timeZone: 'America/Asuncion' }))
+  console.log('UTC OFFSET:', -ahora.getTimezoneOffset()/60, 'horas')
+
     // Paso 1: Firmar
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
     if (!xmlFirmado?.includes('</Signature>')) {
