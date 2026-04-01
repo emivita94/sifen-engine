@@ -56,17 +56,18 @@ export function generarCDC({
   ].join('')
 
   // Construye los 43 caracteres base
- const base = [
-  tipoDE.toString().padStart(2, '0'),                    // [2] iTipDE
-  (rucEmisor + dvEmisor.toString()).padStart(9, '0'),    // [9] RUC+DV
-  establecimiento.toString().padStart(3, '0'),           // [3] dEstab
-  puntoExpedicion.toString().padStart(3, '0'),           // [3] dPunExp
-  numero.toString().padStart(7, '0'),                    // [7] dNumDoc
-  tipoTransaccion.toString(),                            // [1] iTImp
-  fechaStr,                                              // [8] dFecEm
-  codigoSeguridad.toString().padStart(9, '0').substring(1, 9), // [8] CSA
-  ambiente.toString(),                                   // [1] iAmb
-].join('')
+  const base = [
+    tipoDE.toString().padStart(2, '0'),             // [2] iTipDE
+   (rucEmisor + dvEmisor.toString()).padStart(8, '0'),  // [8] dRucEm+DV
+    establecimiento.toString().padStart(3, '0'),     // [3] dEstab
+    puntoExpedicion.toString().padStart(3, '0'),     // [3] dPunExp
+    numero.toString().padStart(7, '0'),              // [7] dNumDoc
+    tipoTransaccion.toString(),                      // [1] iTImp
+    numeroTimbrado.toString().padStart(8, '0'),      // [8] dNumTim
+    fechaStr,                                        // [8] dFecEm
+    ambiente.toString(),                             // [1] iAmb
+    '01',                                           // [3] iTiOpe (siempre 001)
+  ].join('')
 
   if (base.length !== 43) {
     throw new Error(`CDC base inválida: ${base.length} chars en lugar de 43. CDC: ${base}`)

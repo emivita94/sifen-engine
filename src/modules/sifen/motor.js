@@ -6,7 +6,6 @@ import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
 import { writeFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { generarCDC } from '../../shared/utils/cdc.js'
 
 let _xmlgen, _xmlsign, _setapi, _qrgen
 
@@ -81,7 +80,7 @@ export async function procesarDocumento(tenantId, payload) {
   const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
   const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
   const fechaEmision     = payload.fecha ? new Date(payload.fecha) : ahoraParaguay()
-  const codigoSeguridad  = (tenant.codigoSeguridad || '123456789').toString().padStart(9, '0').substring(0, 9)
+  const codigoSeguridad  = Math.floor(100000000 + Math.random() * 900000000).toString()
   const idCSC            = tenant.idCsc || '0001'
 
   // ── 4. Params ───────────────────────────────────────────────────────────────
@@ -198,34 +197,16 @@ export async function procesarDocumento(tenantId, payload) {
   }
 
   // ── 6. Generar XML ──────────────────────────────────────────────────────────
-  // ── 6. Generar XML ──────────────────────────────────────────────────────────
-let xmlGenerado
-try {
-  xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
-} catch (err) {
-  return respuestaError('Error generando XML del DE', err.message)
-}
+  let xmlGenerado
+  try {
+    xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
+  } catch (err) {
+    return respuestaError('Error generando XML del DE', err.message)
+  }
 
-// ── Recalcular CDC correcto y reemplazar en el XML ──────────────────────────
-const cdcCorregido = generarCDC({
-  tipoDE:          tipoDoc,
-  rucEmisor:       tenant.ruc.split('-')[0],
-  dvEmisor:        tenant.ruc.split('-')[1],
-  establecimiento: estCodigo,
-  puntoExpedicion: puntoCodigo,
-  numero:          numeroSecuencia,
-  tipoTransaccion: payload.tipoTransaccion || 1,
-  numeroTimbrado:  timbrado.numeroTimbrado,
-  fechaEmision:    fechaEmision,
-  codigoSeguridad: codigoSeguridad, // agregá esta línea
-  ambiente:        1,
-})
-console.log('CDC CORREGIDO:', cdcCorregido)
-xmlGenerado = xmlGenerado.replace(/Id="[^"]{44}"/g, `Id="${cdcCorregido}"`)
-
-const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
-const cdc = cdcMatch ? cdcMatch[1] : null
-if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
+  const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
+  const cdc = cdcMatch ? cdcMatch[1] : null
+  if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
 
   // ── 7. Firmar + QR + Enviar ─────────────────────────────────────────────────
   let xmlFirmado, sifen
@@ -242,14 +223,6 @@ if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
       `<dFecFirma>${ahoraParaguay().toISOString().substring(0, 19)}</dFecFirma>`
     )
 
-
-console.log('CERT PASSWORD:', JSON.stringify(certPassword))
-console.log('CERT BUFFER SIZE:', certBuffer.length)
-console.log('CERT ALIAS:', tenant.certAlias)
-
-
-
-
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
     if (!xmlFirmado?.includes('</Signature>')) {
@@ -261,7 +234,7 @@ console.log('CERT ALIAS:', tenant.certAlias)
     xmlFirmado = await _qrgen.generateQR(xmlFirmado, idCSC, tenant.csc, env)
     console.log('XML con QR generado, length:', xmlFirmado?.length)
 
-    // Enviar a SIFEN (o guardar en modo debug)
+    // Enviar a SIFEN
     sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword, cdc)
 
   } catch (err) {
@@ -338,9 +311,6 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = 
   const inicio    = Date.now()
   const enviadoEn = new Date()
 
-  // ── MODO DEBUG: agregar SKIP_SIFEN=true en Railway Variables ─────────────
-  // El XML se guarda en /tmp/preview/ y se imprime completo en los logs
-  // Desactivar quitando la variable o poniendo SKIP_SIFEN=false
   if (process.env.SKIP_SIFEN === 'true') {
     try {
       mkdirSync('/tmp/preview', { recursive: true })
@@ -369,8 +339,6 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = 
   // ── ENVÍO REAL A SIFEN ────────────────────────────────────────────────────
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
-
-    // setapi.recibe() hace split("\n").slice(1) para quitar el <?xml?>
     const xmlParaEnviar = xmlFirmado.replace(/^(<\?xml[^?]*\?>)/, '$1\n')
 
     const r = await _setapi.recibe(
