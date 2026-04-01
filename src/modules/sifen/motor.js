@@ -89,7 +89,9 @@ export async function procesarDocumento(tenantId, payload) {
   const idCSC            = tenant.idCsc || '0001'
 
   // ── 4. Params ───────────────────────────────────────────────────────────────
-  const timbradoFecha = new Date(timbrado.vigenciaDesde).toISOString().split('T')[0]
+ const timbradoFecha = timbrado.vigenciaDesde instanceof Date
+  ? timbrado.vigenciaDesde.toISOString().split('T')[0]
+  : String(timbrado.vigenciaDesde).split('T')[0]
 
   const actividadesEconomicas = Array.isArray(tenant.actividadesEconomicas) && tenant.actividadesEconomicas.length > 0
     ? tenant.actividadesEconomicas
