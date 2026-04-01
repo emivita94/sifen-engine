@@ -30,6 +30,11 @@ function ahoraParaguay() {
   return new Date(Date.now() - 3 * 60 * 60 * 1000)
 }
 
+// Esperar N milisegundos
+function esperar(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 export async function procesarDocumento(tenantId, payload) {
   await cargarLibrerias()
   const sql = getDb()
@@ -234,7 +239,7 @@ export async function procesarDocumento(tenantId, payload) {
     xmlFirmado = await _qrgen.generateQR(xmlFirmado, idCSC, tenant.csc, env)
     console.log('XML con QR generado, length:', xmlFirmado?.length)
 
-    // Enviar a SIFEN
+    // Enviar a SIFEN por lote asíncrono
     sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword, cdc)
 
   } catch (err) {
@@ -243,7 +248,7 @@ export async function procesarDocumento(tenantId, payload) {
     try { unlinkSync(tmpCert) } catch (e) {}
   }
 
-  const estadoFinal = sifen.aprobado ? 'aprobado' : 'rechazado'
+  const estadoFinal = sifen.aprobado ? 'aprobado' : (sifen.pendiente ? 'pendiente' : 'rechazado')
 
   // ── 8. Persistir ────────────────────────────────────────────────────────────
   const [doc] = await sql`
@@ -306,74 +311,130 @@ export async function cancelarDocumento(tenantId, cdc) {
   return respuestaDE(docCancelado)
 }
 
-// ── Enviar a SIFEN ────────────────────────────────────────────────────────────
+// ── Enviar a SIFEN por lote asíncrono ─────────────────────────────────────────
 async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = '') {
   const inicio    = Date.now()
   const enviadoEn = new Date()
 
+  // ── MODO DEBUG ────────────────────────────────────────────────────────────
   if (process.env.SKIP_SIFEN === 'true') {
     try {
       mkdirSync('/tmp/preview', { recursive: true })
-      const filename = `DE_${cdc || Date.now()}.xml`
-      const filepath = join('/tmp/preview', filename)
+      const filepath = join('/tmp/preview', `DE_${cdc || Date.now()}.xml`)
       writeFileSync(filepath, xmlFirmado, 'utf8')
       console.log('=== SKIP_SIFEN ACTIVO — XML NO ENVIADO A SIFEN ===')
-      console.log('Archivo:', filepath)
-      console.log('=== XML COMPLETO ===')
       console.log(xmlFirmado)
-      console.log('=== FIN XML ===')
     } catch (e) {
       console.error('Error guardando preview:', e.message)
     }
     return {
-      aprobado:     false,
-      codigo:       'SKIP',
-      mensaje:      'SKIP_SIFEN activo — XML generado y logueado sin enviar a SIFEN',
-      xmlRespuesta: null,
-      enviadoEn,
-      respondidoEn: new Date(),
-      duracionMs:   Date.now() - inicio,
+      aprobado: false, pendiente: false,
+      codigo: 'SKIP',
+      mensaje: 'SKIP_SIFEN activo — XML generado sin enviar',
+      xmlRespuesta: null, enviadoEn,
+      respondidoEn: new Date(), duracionMs: Date.now() - inicio,
     }
   }
 
-  // ── ENVÍO REAL A SIFEN ────────────────────────────────────────────────────
+  // ── ENVÍO REAL POR LOTE ───────────────────────────────────────────────────
   try {
     const env = ambiente === 'prod' ? 'prod' : 'test'
-    const xmlParaEnviar = xmlFirmado.replace(/^(<\?xml[^?]*\?>)/, '$1\n')
 
-    const r = await _setapi.recibe(
+    const r = await _setapi.recibeLote(
       1,
-      xmlParaEnviar,
+      [xmlFirmado],
       env,
       certPath,
       certPassword,
       { timeout: config.sifen.timeoutMs }
     )
 
-    console.log('SIFEN RESPONSE:', JSON.stringify(r))
+    console.log('SIFEN LOTE RESPONSE:', JSON.stringify(r))
 
-    const resp       = r?.['ns2:rRetEnviDe']?.['ns2:rProtDe']?.['ns2:gResProc']
-    const primerResp = Array.isArray(resp) ? resp[0] : resp
-    const aprobado   = ['0260', '0422'].includes(primerResp?.['ns2:dCodRes'])
+    // Extraer número de lote y código de respuesta
+    const respLote    = r?.['ns2:rRetEnvioLote'] || r?.['ns2:rResEnviLoteDe'] || r
+    const codigoLote  = respLote?.['ns2:dCodRes'] || respLote?.['ns2:gResProcLote']?.['ns2:dCodRes']
+    const mensajeLote = respLote?.['ns2:dMsgRes'] || respLote?.['ns2:gResProcLote']?.['ns2:dMsgRes']
+    const numeroLote  = respLote?.['ns2:dNumLote']
 
-    const mensaje = Array.isArray(resp)
-      ? resp.map(r => r?.['ns2:dMsgRes']).filter(Boolean).join(' | ')
-      : primerResp?.['ns2:dMsgRes'] || null
+    console.log('Código:', codigoLote, '| Mensaje:', mensajeLote, '| NumLote:', numeroLote)
 
+    // Código 0300 = Lote recibido OK → consultamos resultado
+    if (numeroLote && codigoLote === '0300') {
+      console.log(`Lote ${numeroLote} recibido — consultando en 5 segundos...`)
+      await esperar(5000)
+
+      const resultado = await consultarLote(numeroLote, env, certPath, certPassword)
+      console.log('RESULTADO LOTE:', JSON.stringify(resultado))
+
+      return {
+        aprobado:     resultado.aprobado,
+        pendiente:    false,
+        codigo:       resultado.codigo,
+        mensaje:      resultado.mensaje,
+        xmlRespuesta: JSON.stringify(r),
+        enviadoEn,
+        respondidoEn: new Date(),
+        duracionMs:   Date.now() - inicio,
+      }
+    }
+
+    // Lote enviado pero sin número todavía — pendiente
     return {
-      aprobado,
-      codigo:       primerResp?.['ns2:dCodRes'] || null,
-      mensaje,
-      xmlRespuesta: JSON.stringify(r) || null,
+      aprobado:     false,
+      pendiente:    true,
+      codigo:       codigoLote || 'LOTE_ENVIADO',
+      mensaje:      mensajeLote || 'Lote enviado — resultado pendiente',
+      xmlRespuesta: JSON.stringify(r),
       enviadoEn,
       respondidoEn: new Date(),
       duracionMs:   Date.now() - inicio,
     }
+
   } catch (err) {
+    console.error('Error enviando lote:', err.message)
     return {
-      aprobado: false, codigo: 'ERR',
+      aprobado: false, pendiente: false,
+      codigo: 'ERR',
       mensaje: `Error de conexión con SIFEN: ${err.message}`,
-      xmlRespuesta: null, enviadoEn, respondidoEn: new Date(), duracionMs: Date.now() - inicio,
+      xmlRespuesta: null, enviadoEn,
+      respondidoEn: new Date(), duracionMs: Date.now() - inicio,
+    }
+  }
+}
+
+// ── Consultar resultado del lote ──────────────────────────────────────────────
+async function consultarLote(numeroLote, env, certPath, certPassword) {
+  try {
+    const r = await _setapi.consultaLote(
+      1,
+      numeroLote,
+      env,
+      certPath,
+      certPassword,
+      { timeout: 30000 }
+    )
+
+    console.log('CONSULTA LOTE:', JSON.stringify(r))
+
+    const respLote   = r?.['ns2:rRetConsLoteDe'] || r?.['ns2:rResConsLoteDe'] || r
+    const protDe     = respLote?.['ns2:rProtDe']
+    const primerProt = Array.isArray(protDe) ? protDe[0] : protDe
+    const gResProc   = primerProt?.['ns2:gResProc']
+    const primerResp = Array.isArray(gResProc) ? gResProc[0] : gResProc
+
+    const codigo   = primerResp?.['ns2:dCodRes'] || respLote?.['ns2:dCodRes']
+    const mensaje  = primerResp?.['ns2:dMsgRes'] || respLote?.['ns2:dMsgRes']
+    const aprobado = ['0260', '0422'].includes(codigo)
+
+    return { aprobado, codigo, mensaje }
+
+  } catch (err) {
+    console.error('Error consultando lote:', err.message)
+    return {
+      aprobado: false,
+      codigo:   'ERR_CONSULTA',
+      mensaje:  `Error consultando lote: ${err.message}`,
     }
   }
 }
