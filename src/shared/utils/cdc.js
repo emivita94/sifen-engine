@@ -66,7 +66,7 @@ export function generarCDC({
     numeroTimbrado.toString().padStart(8, '0'),      // [8] dNumTim
     fechaStr,                                        // [8] dFecEm
     ambiente.toString(),                             // [1] iAmb
-    '001',                                           // [3] iTiOpe (siempre 001)
+    '01',                                           // [3] iTiOpe (siempre 001)
   ].join('')
 
   if (base.length !== 43) {
