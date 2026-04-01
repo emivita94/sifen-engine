@@ -355,7 +355,7 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = 
     const respLote    = r?.['ns2:rRetEnvioLote'] || r?.['ns2:rResEnviLoteDe'] || r
     const codigoLote  = respLote?.['ns2:dCodRes'] || respLote?.['ns2:gResProcLote']?.['ns2:dCodRes']
     const mensajeLote = respLote?.['ns2:dMsgRes'] || respLote?.['ns2:gResProcLote']?.['ns2:dMsgRes']
-    const numeroLote  = respLote?.['ns2:dNumLote']
+   const numeroLote = respLote?.['ns2:dProtConsLote'] || respLote?.['ns2:dNumLote']
 
     console.log('Código:', codigoLote, '| Mensaje:', mensajeLote, '| NumLote:', numeroLote)
 
