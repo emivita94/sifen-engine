@@ -6,6 +6,7 @@ import { dispararWebhook } from './webhooks.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
 import { writeFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
+import { generarCDC } from '../../shared/utils/cdc.js'
 
 let _xmlgen, _xmlsign, _setapi, _qrgen
 
@@ -197,16 +198,33 @@ export async function procesarDocumento(tenantId, payload) {
   }
 
   // ── 6. Generar XML ──────────────────────────────────────────────────────────
-  let xmlGenerado
-  try {
-    xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
-  } catch (err) {
-    return respuestaError('Error generando XML del DE', err.message)
-  }
+  // ── 6. Generar XML ──────────────────────────────────────────────────────────
+let xmlGenerado
+try {
+  xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
+} catch (err) {
+  return respuestaError('Error generando XML del DE', err.message)
+}
 
-  const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
-  const cdc = cdcMatch ? cdcMatch[1] : null
-  if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
+// ── Recalcular CDC correcto y reemplazar en el XML ──────────────────────────
+const cdcCorregido = generarCDC({
+  tipoDE:          tipoDoc,
+  rucEmisor:       tenant.ruc.split('-')[0],
+  dvEmisor:        tenant.ruc.split('-')[1],
+  establecimiento: estCodigo,
+  puntoExpedicion: puntoCodigo,
+  numero:          numeroSecuencia,
+  tipoTransaccion: payload.tipoTransaccion || 1,
+  numeroTimbrado:  timbrado.numeroTimbrado,
+  fechaEmision:    fechaEmision,
+  ambiente:        1,
+})
+console.log('CDC CORREGIDO:', cdcCorregido)
+xmlGenerado = xmlGenerado.replace(/Id="[^"]{44}"/g, `Id="${cdcCorregido}"`)
+
+const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
+const cdc = cdcMatch ? cdcMatch[1] : null
+if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
 
   // ── 7. Firmar + QR + Enviar ─────────────────────────────────────────────────
   let xmlFirmado, sifen
