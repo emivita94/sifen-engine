@@ -223,6 +223,14 @@ export async function procesarDocumento(tenantId, payload) {
       `<dFecFirma>${ahoraParaguay().toISOString().substring(0, 19)}</dFecFirma>`
     )
 
+
+console.log('CERT PASSWORD:', JSON.stringify(certPassword))
+console.log('CERT BUFFER SIZE:', certBuffer.length)
+console.log('CERT ALIAS:', tenant.certAlias)
+
+
+
+
     xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
 
     if (!xmlFirmado?.includes('</Signature>')) {
