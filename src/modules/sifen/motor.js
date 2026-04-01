@@ -407,38 +407,28 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = 
 async function consultarLote(numeroLote, env, certPath, certPassword) {
   try {
     const r = await _setapi.consultaLote(
-      1,
-      numeroLote,
-      env,
-      certPath,
-      certPassword,
+      1, numeroLote, env, certPath, certPassword,
       { timeout: 30000 }
     )
 
     console.log('CONSULTA LOTE:', JSON.stringify(r))
 
-    const respLote   = r?.['ns2:rRetConsLoteDe'] || r?.['ns2:rResConsLoteDe'] || r
-    const protDe     = respLote?.['ns2:rProtDe']
-    const primerProt = Array.isArray(protDe) ? protDe[0] : protDe
-    const gResProc   = primerProt?.['ns2:gResProc']
+    const respLote   = r?.['ns2:rResEnviConsLoteDe'] || r
+    const gResProc   = respLote?.['ns2:gResProcLote']?.['ns2:gResProc']
     const primerResp = Array.isArray(gResProc) ? gResProc[0] : gResProc
 
-    const codigo   = primerResp?.['ns2:dCodRes'] || respLote?.['ns2:dCodRes']
-    const mensaje  = primerResp?.['ns2:dMsgRes'] || respLote?.['ns2:dMsgRes']
-    const aprobado = ['0260', '0422'].includes(codigo)
+    const codigo   = primerResp?.['ns2:dCodRes'] || respLote?.['ns2:dCodResLot']
+    const mensaje  = primerResp?.['ns2:dMsgRes'] || respLote?.['ns2:dMsgResLot']
+    const estRes   = respLote?.['ns2:gResProcLote']?.['ns2:dEstRes']
+    const aprobado = estRes === 'Aprobado' || ['0260', '0422'].includes(codigo)
 
     return { aprobado, codigo, mensaje }
 
   } catch (err) {
     console.error('Error consultando lote:', err.message)
-    return {
-      aprobado: false,
-      codigo:   'ERR_CONSULTA',
-      mensaje:  `Error consultando lote: ${err.message}`,
-    }
+    return { aprobado: false, codigo: 'ERR_CONSULTA', mensaje: `Error: ${err.message}` }
   }
 }
-
 // ── Cálculos ──────────────────────────────────────────────────────────────────
 const sum = (items, fn) => items.reduce((s, i) => s + (fn(i) || 0), 0)
 function calcularMontoTotal(p) { return p.montoTotal  ?? sum(p.items || [], i => i.precioTotal) }
