@@ -217,6 +217,7 @@ const cdcCorregido = generarCDC({
   tipoTransaccion: payload.tipoTransaccion || 1,
   numeroTimbrado:  timbrado.numeroTimbrado,
   fechaEmision:    fechaEmision,
+  codigoSeguridad: codigoSeguridad, // agregá esta línea
   ambiente:        1,
 })
 console.log('CDC CORREGIDO:', cdcCorregido)
