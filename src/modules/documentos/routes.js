@@ -165,13 +165,32 @@ export async function documentosRoutes(fastify) {
     const [doc] = await sql`SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}`
     if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
 
-    const [tenant] = await sql`SELECT ruc, razon_social, direccion, email, telefono FROM tenants WHERE id = ${request.tenant.id}`
+    const [tenant] = await sql`
+      SELECT ruc, razon_social, direccion, email, telefono,
+             actividades_economicas, nombre_fantasia
+      FROM tenants WHERE id = ${request.tenant.id}
+    `
 
+    // Datos del timbrado para mostrar en el KUDE
+    if (doc.timbradoId) {
+      const [timbrado] = await sql`
+        SELECT numero_timbrado, vigencia_desde FROM timbrados WHERE id = ${doc.timbradoId}
+      `
+      if (timbrado) {
+        doc.timbradoNumero        = timbrado.numeroTimbrado
+        doc.timbradoVigenciaDesde = timbrado.vigenciaDesde
+      }
+    }
+
+    // Generar QR desde el link del XML firmado
     let qrBase64 = null
-    if (doc.estado === 'aprobado' && doc.cdc) {
+    if (doc.estado === 'aprobado' && doc.xmlFirmado) {
       try {
-        const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-        qrBase64 = await qrgen.generateQR(`https://ekuatia.set.gov.py/consultas/qr?nVersion=150&Id=${doc.cdc}`, { type: 'image/png', quality: 0.92 })
+        const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
+        if (qrMatch) {
+          const qrgen = (await import('facturacionelectronicapy-qrgen')).default
+          qrBase64 = await qrgen.generateQR(qrMatch[1], { type: 'image/png', quality: 0.92 })
+        }
       } catch (e) {}
     }
 
