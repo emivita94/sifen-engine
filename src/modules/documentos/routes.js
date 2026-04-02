@@ -1,5 +1,5 @@
 // src/modules/documentos/routes.js
-import { procesarDocumento, cancelarDocumento } from '../sifen/motor.js'
+import { procesarDocumento, cancelarDocumento, inutilizarDocumentos } from '../sifen/motor.js'
 import { getDb } from '../../db/connection.js'
 import { generarKude } from '../sifen/kude.js'
 import { hashApiKey } from '../../shared/crypto/index.js'
@@ -80,6 +80,34 @@ async function autenticar(request, reply) {
   }
 
   sql`UPDATE api_keys SET ultimo_uso = now() WHERE id = ${row.keyId}`.catch(() => {})
+  // ─── POST /documentos/inutilizar ──────────────────────────────────────────
+  fastify.post('/inutilizar', async (request, reply) => {
+    const { tipoDocumento, establecimiento, punto, desde, hasta, motivo } = request.body || {}
+    if (!desde || !hasta) {
+      return reply.status(400).send({ error: 'Se requieren los campos desde y hasta' })
+    }
+    if (Number(desde) > Number(hasta)) {
+      return reply.status(400).send({ error: 'El campo desde no puede ser mayor que hasta' })
+    }
+    try {
+      const resultado = await inutilizarDocumentos(request.tenant.id, {
+        tipoDocumento: tipoDocumento || 1,
+        establecimiento,
+        punto,
+        desde: Number(desde),
+        hasta: Number(hasta),
+        motivo: motivo || 'Documentos no utilizados',
+      })
+      if (!resultado.ok) {
+        return reply.status(422).send({ error: resultado.error || 'No se pudo inutilizar' })
+      }
+      return { ok: true, data: resultado }
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error inutilizando documentos', mensaje: err.message })
+    }
+  })
+
 }
 
 export async function documentosRoutes(fastify) {
@@ -167,7 +195,7 @@ export async function documentosRoutes(fastify) {
 
     const [tenant] = await sql`
       SELECT ruc, razon_social, direccion, email, telefono,
-             actividades_economicas, nombre_fantasia
+             actividades_economicas, nombre_fantasia, logo_url
       FROM tenants WHERE id = ${request.tenant.id}
     `
 
@@ -184,18 +212,19 @@ export async function documentosRoutes(fastify) {
 
     // Generar QR desde el link del XML firmado
     let qrBase64 = null
-    if (doc.estado === 'aprobado' && doc.xmlFirmado) {
+    const xmlParaQR = doc.xmlFirmado || ''
+    if (doc.estado === 'aprobado' && xmlParaQR) {
       try {
-        const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
-if (qrMatch) {
-  const qrUrl = qrMatch[1]
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-  const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-  qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
-}
-      } catch (e) {}
+        const qrMatch = String(xmlParaQR).match(/dCarQR>([^<]+)</)
+        if (qrMatch) {
+          const qrUrl = qrMatch[1]
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+          const QRCode = await import('qrcode')
+          qrBase64 = await QRCode.default.toDataURL(qrUrl, { type: 'image/png', width: 200, margin: 1 })
+        }
+      } catch (e) { console.log('QR error:', e.message) }
     }
 
     try {
@@ -223,6 +252,34 @@ if (qrMatch) {
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send({ error: 'Error cancelando documento', mensaje: err.message })
+    }
+  })
+
+  // ─── POST /documentos/inutilizar ──────────────────────────────────────────
+  fastify.post('/inutilizar', async (request, reply) => {
+    const { tipoDocumento, establecimiento, punto, desde, hasta, motivo } = request.body || {}
+    if (!desde || !hasta) {
+      return reply.status(400).send({ error: 'Se requieren los campos desde y hasta' })
+    }
+    if (Number(desde) > Number(hasta)) {
+      return reply.status(400).send({ error: 'El campo desde no puede ser mayor que hasta' })
+    }
+    try {
+      const resultado = await inutilizarDocumentos(request.tenant.id, {
+        tipoDocumento: tipoDocumento || 1,
+        establecimiento,
+        punto,
+        desde: Number(desde),
+        hasta: Number(hasta),
+        motivo: motivo || 'Documentos no utilizados',
+      })
+      if (!resultado.ok) {
+        return reply.status(422).send({ error: resultado.error || 'No se pudo inutilizar' })
+      }
+      return { ok: true, data: resultado }
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error inutilizando documentos', mensaje: err.message })
     }
   })
 

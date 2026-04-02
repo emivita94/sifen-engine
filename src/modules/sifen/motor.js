@@ -386,10 +386,10 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
       throw new Error('La firma del evento no se generó correctamente')
     }
 
-    // Enviar el evento a SIFEN
-    const r = await _setapi.recibeLote(
+    // Enviar el evento a SIFEN usando _setapi.evento
+    const r = await _setapi.evento(
       1,
-      [xmlEventoFirmado],
+      xmlEventoFirmado,
       env,
       tmpCert,
       certPassword,
@@ -398,23 +398,16 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
 
     console.log('EVENTO CANCELACION RESPONSE:', JSON.stringify(r))
 
-    const respLote   = r?.['ns2:rResEnviLoteDe'] || r
-    const codigoLote = respLote?.['ns2:dCodRes']
-    const numLote    = respLote?.['ns2:dProtConsLote']
+    // Parsear respuesta del evento
+    const respEvento  = r?.['ns2:rRetEnvEve'] || r?.['ns2:rResEnvEve'] || r
+    const codigoEvento = respEvento?.['ns2:dCodRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dCodRes']
+    const mensajeEvento= respEvento?.['ns2:dMsgRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dMsgRes']
+    const aprobado     = ['0260', '0422', '0085'].includes(codigoEvento)
 
-    let aprobado = false, codigoFinal = codigoLote, mensajeFinal = respLote?.['ns2:dMsgRes'] || ''
-
-    if (numLote && codigoLote === '0300') {
-      console.log(`Lote evento ${numLote} recibido — consultando en 5 segundos...`)
-      await esperar(5000)
-      const resultado = await consultarLote(numLote, env, tmpCert, certPassword)
-      aprobado     = resultado.aprobado
-      codigoFinal  = resultado.codigo
-      mensajeFinal = resultado.mensaje
-    }
+    console.log(`Evento cancelacion: codigo=${codigoEvento} mensaje=${mensajeEvento}`)
 
     if (!aprobado) {
-      return respuestaError(`La SET no aprobó la cancelación: ${mensajeFinal} (${codigoFinal})`)
+      return respuestaError(`La SET no aprobo la cancelacion: ${mensajeEvento} (${codigoEvento})`)
     }
 
   } catch (err) {
@@ -434,6 +427,142 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
 
   dispararWebhook(docCancelado, 'de.cancelado').catch(() => {})
   return respuestaDE(docCancelado)
+}
+
+
+// ── Inutilización de documentos ───────────────────────────────────────────────
+export async function inutilizarDocumentos(tenantId, { tipoDocumento, establecimiento, punto, desde, hasta, motivo }) {
+  await cargarLibrerias()
+  const sql = getDb()
+
+  // ── 1. Tenant + certificado ─────────────────────────────────────────────────
+  const [tenant] = await sql`
+    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_password,
+           csc, id_csc
+    FROM tenants WHERE id = ${tenantId} AND activo = true
+  `
+  if (!tenant)                return respuestaError('Tenant no encontrado')
+  if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
+
+  // ── 2. Timbrado ─────────────────────────────────────────────────────────────
+  const [timbrado] = await sql`
+    SELECT t.*, e.codigo AS est_codigo, p.codigo AS punto_codigo
+    FROM timbrados t
+    JOIN establecimientos e ON e.id = t.establecimiento_id
+    JOIN puntos_expedicion p ON p.id = t.punto_id
+    WHERE t.tenant_id = ${tenantId}
+      AND t.tipo_documento = ${tipoDocumento || 1}
+      AND t.activo = true
+    ORDER BY t.vigencia_hasta DESC LIMIT 1
+  `
+  if (!timbrado) return respuestaError('No se encontró timbrado activo para ese tipo de documento')
+
+  const estCodigo   = (establecimiento || timbrado.estCodigo).toString().padStart(3, '0')
+  const puntoCodigo = (punto || timbrado.puntoCodigo).toString().padStart(3, '0')
+
+  const timbradoFecha = timbrado.vigenciaDesde instanceof Date
+    ? timbrado.vigenciaDesde.toISOString().split('T')[0]
+    : String(timbrado.vigenciaDesde).split('T')[0]
+
+  const params = {
+    version:           150,
+    ruc:               tenant.ruc,
+    razonSocial:       tenant.razonSocial,
+    timbradoNumero:    timbrado.numeroTimbrado,
+    timbradoFecha,
+    tipoContribuyente: 2,
+    establecimientos: [{
+      codigo:                  estCodigo,
+      direccion:               '',
+      numeroCasa:              '0',
+      departamento:            1,
+      departamentoDescripcion: 'CAPITAL',
+      distrito:                1,
+      distritoDescripcion:     'ASUNCION (DISTRITO)',
+      ciudad:                  1,
+      ciudadDescripcion:       'ASUNCION (DISTRITO)',
+      telefono:                '',
+      email:                   '',
+    }],
+  }
+
+  // Estructura según README: { tipoDocumento, establecimiento, punto, desde, hasta, motivo }
+  const dataEvento = {
+    tipoDocumento: tipoDocumento || 1,
+    establecimiento: estCodigo,
+    punto:           puntoCodigo,
+    desde:           Number(desde),
+    hasta:           Number(hasta),
+    motivo:          motivo || 'Documentos no utilizados',
+  }
+
+  // ── 3. Generar + firmar + enviar ─────────────────────────────────────────────
+  let xmlEvento, xmlEventoFirmado
+  const tmpCert = join('/tmp', `cert_inut_${tenantId}_${Date.now()}.p12`)
+  const env     = tenant.ambiente === 'prod' ? 'prod' : 'test'
+
+  try {
+    const certBuffer   = desencriptar(tenant.certificadoEnc)
+    const certPassword = tenant.certPassword || ''
+    writeFileSync(tmpCert, certBuffer)
+
+    xmlEvento = await _xmlgen.generateXMLEventoInutilizacion(1, params, dataEvento, { version: 150 })
+    console.log('XML Evento inutilizacion generado, length:', xmlEvento?.length)
+    if (!xmlEvento) throw new Error('No se pudo generar el XML del evento de inutilizacion')
+
+    xmlEventoFirmado = await _xmlsign.signXML(xmlEvento, tmpCert, certPassword, true)
+    if (!xmlEventoFirmado?.includes('</Signature>')) {
+      throw new Error('La firma del evento no se genero correctamente')
+    }
+
+    const r = await _setapi.evento(
+      1,
+      xmlEventoFirmado,
+      env,
+      tmpCert,
+      certPassword,
+      { timeout: config.sifen.timeoutMs }
+    )
+
+    console.log('EVENTO INUTILIZACION RESPONSE:', JSON.stringify(r))
+
+    const respEvento   = r?.['ns2:rRetEnvEve'] || r?.['ns2:rResEnvEve'] || r
+    const codigoEvento = respEvento?.['ns2:dCodRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dCodRes']
+    const mensajeEvento= respEvento?.['ns2:dMsgRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dMsgRes']
+    const aprobado     = ['0260', '0422', '0085'].includes(codigoEvento)
+
+    console.log(`Evento inutilizacion: codigo=${codigoEvento} mensaje=${mensajeEvento}`)
+
+    if (!aprobado) {
+      return respuestaError(`La SET no aprobo la inutilizacion: ${mensajeEvento} (${codigoEvento})`)
+    }
+
+  } catch (err) {
+    console.error('Error inutilizando documentos:', err.message)
+    return respuestaError('Error enviando inutilizacion a SIFEN: ' + err.message)
+  } finally {
+    try { unlinkSync(tmpCert) } catch (e) {}
+  }
+
+  // ── 4. Marcar documentos como inutilizados en BD ─────────────────────────────
+  const numeroDesde = Number(desde)
+  const numeroHasta = Number(hasta)
+  await sql`
+    UPDATE documentos
+    SET estado = 'inutilizado', actualizado_en = now()
+    WHERE tenant_id   = ${tenantId}
+      AND tipo_documento = ${tipoDocumento || 1}
+      AND numero_secuencia >= ${numeroDesde}
+      AND numero_secuencia <= ${numeroHasta}
+      AND estado IN ('rechazado', 'pendiente')
+  `
+
+  return {
+    ok:      true,
+    mensaje: `Documentos ${desde} al ${hasta} inutilizados correctamente en la SET`,
+    desde:   numeroDesde,
+    hasta:   numeroHasta,
+  }
 }
 
 // ── Enviar a SIFEN por lote asíncrono ─────────────────────────────────────────
