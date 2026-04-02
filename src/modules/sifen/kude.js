@@ -607,13 +607,14 @@ export async function generarKudeTicket58(doc, tenant, qrBase64 = null) {
 
   ln(y); y -= 8
 
-  // ── QR ───────────────────────────────────────────────────────────────────────
+  // ── QR centrado y tamaño moderado ──────────────────────────────────────────
   try {
     const qrImg = await embedQR(pdfDoc, qrBase64)
     if (qrImg) {
-      const qrSz = PW - MG * 2
-      page.drawImage(qrImg, { x: MG, y: y - qrSz, width: qrSz, height: qrSz })
-      y -= qrSz + 8
+      const qrSz = mmToPt(35)   // 35mm — moderado, escaneable y no invasivo
+      const qrX  = (PW - qrSz) / 2
+      page.drawImage(qrImg, { x: qrX, y: y - qrSz, width: qrSz, height: qrSz })
+      y -= qrSz + 6
     }
   } catch (e) { /* sin QR */ }
 
