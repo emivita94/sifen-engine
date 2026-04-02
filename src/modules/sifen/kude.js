@@ -59,6 +59,21 @@ function truncar(texto, max) {
   return t.length > max ? t.substring(0, max - 1) + '.' : t
 }
 
+function tipoDocReceptor(tipo) {
+  if (tipo === 1) return 'RUC'
+  if (tipo === 2) return 'Pasaporte'
+  if (tipo === 3) return 'C.I.'
+  return ''
+}
+
+function parsePayload(doc) {
+  if (!doc.payloadJson) return {}
+  if (typeof doc.payloadJson === 'string') {
+    try { return JSON.parse(doc.payloadJson) } catch (e) { return {} }
+  }
+  return doc.payloadJson
+}
+
 // ── KUDE A4 ───────────────────────────────────────────────────────────────────
 export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   const pdfDoc = await PDFDocument.create()
@@ -105,7 +120,7 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
     page.drawRectangle(o)
   }
 
-  const payload  = doc.payloadJson || {}
+  const payload  = parsePayload(doc)
   const items    = payload.items || []
   const receptor = payload.receptor || {}
   const tipoDoc  = doc.tipoDocumento || 1
@@ -155,9 +170,11 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   txt('Venta de mercaderia', M + 4, y - recH + 6, { size: 6.5, color: COLOR_GRIS })
 
   const rrx = recDivX + 6
-  const tipoDocRec = receptor.tipo === 1 ? 'RUC' : receptor.tipo === 2 ? 'C.I.' : receptor.tipo === 3 ? 'C.I.' : 'N/A'
-  txt(`${tipoDocRec}:`, rrx, y - 9, { font: fontBold, size: 7 })
-  txt(receptor.documento || '0', rrx + 25, y - 9, { size: 7.5 })
+  const tipoDocRec = tipoDocReceptor(receptor.tipo)
+  if (tipoDocRec) {
+    txt(`${tipoDocRec}:`, rrx, y - 9, { font: fontBold, size: 7 })
+    txt(receptor.documento || '0', rrx + 40, y - 9, { size: 7.5 })
+  }
   txt('Razon Social:', rrx, y - 20, { font: fontBold, size: 7 })
   txt(truncar(receptor.razonSocial || 'CONSUMIDOR FINAL', 35), rrx, y - 29, { size: 7.5 })
   if (receptor.email) {
@@ -321,7 +338,7 @@ export async function generarKudeTicket(doc, tenant, qrBase64 = null) {
   const pdfDoc  = await PDFDocument.create()
   const mmToPt  = mm => mm * 2.8346
   const pageW   = mmToPt(80)
-  const payload = doc.payloadJson || {}
+  const payload = parsePayload(doc)
   const items   = payload.items || []
   const receptor = payload.receptor || {}
   const moneda  = payload.moneda || 'PYG'
@@ -449,7 +466,7 @@ export async function generarKudeTicket58(doc, tenant, qrBase64 = null) {
   const pdfDoc  = await PDFDocument.create()
   const mmToPt  = mm => mm * 2.8346
   const pageW   = mmToPt(58)
-  const payload = doc.payloadJson || {}
+  const payload = parsePayload(doc)
   const items   = payload.items || []
   const receptor = payload.receptor || {}
   const moneda  = payload.moneda || 'PYG'
