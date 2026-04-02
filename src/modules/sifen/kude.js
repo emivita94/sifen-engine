@@ -49,7 +49,7 @@ function formatHora(fecha) {
 function truncar(texto, max) {
   if (!texto) return ''
   const t = String(texto)
-  return t.length > max ? t.substring(0, max - 1) + '…' : t
+  return t.length > max ? t.substring(0, max - 1) + '.' : t
 }
 
 // ── Función principal: genera KUDE A4 ─────────────────────────────────────────
@@ -84,7 +84,7 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
     while (s.length > 0 && font.widthOfTextAtSize(s, size) > maxWidth) {
       s = s.slice(0, -1)
     }
-    return s.length < t.length ? s + '…' : s
+    return s.length < t.length ? s + '.' : s
   }
 
   const linea = (x1, y1, x2, y2, opts = {}) => {
@@ -150,8 +150,8 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   const estadoColor = doc.estado === 'aprobado' ? rgb(0.13, 0.55, 0.13) : rgb(0.75, 0.15, 0.15)
   rect(margin, y - 14, width - margin * 2, 14, { fill: estadoColor })
   const estadoLabel = doc.estado === 'aprobado'
-    ? `✓ DOCUMENTO APROBADO POR LA SET — Fecha: ${formatFecha(doc.sifenRespEn)} ${formatHora(doc.sifenRespEn)}`
-    : `✗ DOCUMENTO ${(doc.estado || '').toUpperCase()}`
+    ? `APROBADO POR LA SET — Fecha: ${formatFecha(doc.sifenRespEn)} ${formatHora(doc.sifenRespEn)}`
+    : `DOCUMENTO ${(doc.estado || '').toUpperCase()}`
   texto(estadoLabel, margin + 6, y - 10, {
     font: fontBold, size: 7.5, color: COLOR_BLANCO,
   })
@@ -381,7 +381,7 @@ export async function generarKudeTicket(doc, tenant, qrBase64 = null) {
   y -= 6
 
   // Estado
-  const estadoTxt = doc.estado === 'aprobado' ? '✓ APROBADO POR SET' : `✗ ${(doc.estado || '').toUpperCase()}`
+  const estadoTxt = doc.estado === 'aprobado' ? 'APROBADO POR SET' : `${(doc.estado || '').toUpperCase()}`
   centrado(estadoTxt, y - 8, { font: fontBold, size: 7.5, color: doc.estado === 'aprobado' ? rgb(0.13,0.55,0.13) : rgb(0.75,0.15,0.15) })
   y -= 12
   linea(y)
@@ -560,7 +560,7 @@ export async function generarKudeTicket58(doc, tenant, qrBase64 = null) {
   y -= 5
 
   // Estado
-  const estadoTxt   = doc.estado === 'aprobado' ? '✓ APROBADO SET' : `✗ ${(doc.estado||'').toUpperCase()}`
+  const estadoTxt   = doc.estado === 'aprobado' ? 'APROBADO SET' : `${(doc.estado||'').toUpperCase()}`
   const estadoColor = doc.estado === 'aprobado' ? rgb(0.13, 0.55, 0.13) : rgb(0.75, 0.15, 0.15)
   centrado(estadoTxt, y - 7, { font: fontBold, size: 7, color: estadoColor })
   y -= 10
