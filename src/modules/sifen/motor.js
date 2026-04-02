@@ -322,8 +322,6 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
   // ── 3. Generar XML del evento de cancelación ─────────────────────────────────
   const env         = tenant.ambiente === 'prod' ? 'prod' : 'test'
   const idCSC       = tenant.idCsc || '0001'
-  const fechaEvento = ahoraParaguay().toISOString().substring(0, 19)
-
   // Params del evento — mismo formato que el DE
   const [timbrado] = await sql`
     SELECT t.*, e.codigo AS est_codigo, p.codigo AS punto_codigo
@@ -333,31 +331,37 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     WHERE t.id = ${doc.timbradoId}
   `
 
+  const timbradoFechaEvento = timbrado?.vigenciaDesde
+    ? (timbrado.vigenciaDesde instanceof Date
+        ? timbrado.vigenciaDesde.toISOString().split('T')[0]
+        : String(timbrado.vigenciaDesde).split('T')[0])
+    : ''
+
   const params = {
-    version:        150,
-    ruc:            tenant.ruc,
-    razonSocial:    tenant.razonSocial,
-    timbradoNumero: timbrado?.numeroTimbrado || '',
-    timbradoFecha:  timbrado?.vigenciaDesde
-      ? (timbrado.vigenciaDesde instanceof Date
-          ? timbrado.vigenciaDesde.toISOString().split('T')[0]
-          : String(timbrado.vigenciaDesde).split('T')[0])
-      : '',
+    version:           150,
+    ruc:               tenant.ruc,
+    razonSocial:       tenant.razonSocial,
+    timbradoNumero:    timbrado?.numeroTimbrado || '',
+    timbradoFecha:     timbradoFechaEvento,
     tipoContribuyente: 2,
     establecimientos: [{
-      codigo: timbrado?.estCodigo?.toString().padStart(3,'0') || '001',
-      direccion: '', numeroCasa: '0',
-      departamento: 1, departamentoDescripcion: 'CAPITAL',
-      distrito: 1, distritoDescripcion: 'ASUNCION (DISTRITO)',
-      ciudad: 1, ciudadDescripcion: 'ASUNCION (DISTRITO)',
-      telefono: tenant.telefono || '', email: tenant.email || '',
+      codigo:                  timbrado?.estCodigo?.toString().padStart(3,'0') || '001',
+      direccion:               '',
+      numeroCasa:              '0',
+      departamento:            1,
+      departamentoDescripcion: 'CAPITAL',
+      distrito:                1,
+      distritoDescripcion:     'ASUNCION (DISTRITO)',
+      ciudad:                  1,
+      ciudadDescripcion:       'ASUNCION (DISTRITO)',
+      telefono:                '',
+      email:                   '',
     }],
   }
 
+  // Estructura exacta según README de la librería
   const dataEvento = {
-    Id:   cdc,
-    fecha: fechaEvento,
-    tipoEvento: 1,           // 1 = Cancelación
+    cdc,
     motivo,
   }
 
@@ -369,9 +373,9 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     const certPassword = tenant.certPassword || ''
     writeFileSync(tmpCert, certBuffer)
 
-    // Generar XML del evento
-    xmlEvento = await _xmlgen.generateXMLEvento(params, dataEvento, { version: 150 })
-    console.log('XML Evento cancelación generado, length:', xmlEvento?.length)
+    // Generar XML del evento — firma: (id, params, data, config)
+    xmlEvento = await _xmlgen.generateXMLEventoCancelacion(1, params, dataEvento, { version: 150 })
+    console.log('XML Evento cancelacion generado, length:', xmlEvento?.length)
 
     if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
 
