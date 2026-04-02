@@ -185,27 +185,31 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   // ── CABECERA ────────────────────────────────────────────────────────────────
   const logoColW = W * 0.52
   const timColX  = M + logoColW
-  const hH       = 72
+  const hH       = 82
 
   bx(M, y - hH, W, hH, { border: C_BORDE })
   ln(timColX, y, timColX, y - hH)
 
-  // Logo
+  // Logo - se dibuja arriba y los textos van debajo del logo
   const logoImg = await embedLogo(pdfDoc, tenant.logoUrl || tenant.logo_url)
+  let logoBottomY = y - 6   // posicion donde termina el logo (o top si no hay logo)
   if (logoImg) {
-    const maxH = 32, maxW = logoColW * 0.50
+    const maxH = 28, maxW = logoColW * 0.55
     const dims = logoImg.scale(1)
     const sc   = Math.min(maxW / dims.width, maxH / dims.height)
-    page.drawImage(logoImg, { x: M + 8, y: y - 8 - dims.height * sc, width: dims.width * sc, height: dims.height * sc })
+    const lw   = dims.width * sc
+    const lh   = dims.height * sc
+    page.drawImage(logoImg, { x: M + 8, y: y - 6 - lh, width: lw, height: lh })
+    logoBottomY = y - 6 - lh - 4   // 4pt de margen bajo el logo
   }
 
-  // Datos emisor
-  t(trunc(tenant.razonSocial || tenant.razon_social || '', 46), M + 8, y - 38, { font: fBold, size: 8.5 })
-  t(`RUC: ${tenant.ruc || ''}`, M + 8, y - 49, { font: fBold, size: 7.5 })
-  t(trunc(tenant.direccion || '', 56), M + 8, y - 59, { size: 7 })
+  // Datos emisor - empiezan justo debajo del logo
+  t(trunc(tenant.razonSocial || tenant.razon_social || '', 46), M + 8, logoBottomY - 0,  { font: fBold, size: 8 })
+  t(`RUC: ${tenant.ruc || ''}`, M + 8, logoBottomY - 11, { font: fBold, size: 7.5 })
+  t(trunc(tenant.direccion || '', 56), M + 8, logoBottomY - 21, { size: 7 })
 
   // Actividades economicas
-  let actY = y - 68
+  let actY = logoBottomY - 31
   for (const act of actEcos) {
     t(trunc((act.descripcion || '') + '.', 60), M + 8, actY, { size: 6.5, color: C_GRIS })
     actY -= 9
@@ -318,15 +322,16 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
     tR(ex>0?formatNum(ex,moneda):'0', cols[6].x+cols[6].w-2, y-8, { size: 6.5 })
     tR(g5>0?formatNum(g5,moneda):'0', cols[7].x+cols[7].w-2, y-8, { size: 6.5 })
     tR(g10>0?formatNum(g10,moneda):'0', cols[8].x+cols[8].w-2, y-8, { size: 6.5 })
-    for (const col of cols) ln(col.x, y, col.x, y-rowH, 0.3, C_BORDE)
+    // Solo bordes exteriores y línea inferior — sin verticales internas
+    ln(M, y, M, y-rowH, 0.3, C_BORDE)
     ln(M+W, y, M+W, y-rowH, 0.3, C_BORDE)
     ln(M, y-rowH, M+W, y-rowH, 0.3, C_BORDE)
     y -= rowH
   }
 
-  // Filas vacías mínimo 5
+  // Filas vacías mínimo 5 — sin cuadrícula
   for (let i = 0; i < Math.max(0, 5 - items.length); i++) {
-    for (const col of cols) ln(col.x, y, col.x, y-rowH, 0.3, C_BORDE)
+    ln(M, y, M, y-rowH, 0.3, C_BORDE)
     ln(M+W, y, M+W, y-rowH, 0.3, C_BORDE)
     ln(M, y-rowH, M+W, y-rowH, 0.3, C_BORDE)
     y -= rowH
