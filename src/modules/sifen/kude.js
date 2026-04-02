@@ -14,7 +14,7 @@ const C_BORDE      = rgb(0.65, 0.65, 0.65)
 const C_HEADER_BG  = rgb(0.96, 0.96, 0.96)
 const C_VERDE      = rgb(0.10, 0.50, 0.10)
 const C_ROJO       = rgb(0.70, 0.10, 0.10)
-const C_AZUL       = rgb(0.10, 0.20, 0.50)
+const C_AZUL       = rgb(0.25, 0.25, 0.25)
 
 // ── Tipos de documento ────────────────────────────────────────────────────────
 const TIPOS_DOC = {
@@ -218,7 +218,7 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   y -= logoH
 
   // ── DATOS DEL DOCUMENTO Y RECEPTOR ─────────────────────────────────────────
-  const datH    = 55
+  const datH    = 72
   const datColW = W * 0.50
   bx(M, y - datH, W, datH, { border: C_BORDE })
   ln(M + datColW, y, M + datColW, y - datH)
@@ -228,14 +228,14 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   t('Fecha y hora de emision:', lx, y - 9, { font: fBold, size: 7 })
   t(`${fFecha(doc.creadoEn)} ${fHora(doc.creadoEn)}`, lx, y - 18, { size: 7.5 })
 
-  t('Condicion Venta:', lx, y - 29, { font: fBold, size: 7 })
-  t('Contado', lx + 70, y - 29, { size: 7.5 })
+  t('Condicion Venta:', lx, y - 31, { font: fBold, size: 7 })
+  t('Contado', lx + 72, y - 31, { size: 7 })
 
-  t('Tipo de Transaccion:', lx, y - 40, { font: fBold, size: 7 })
-  t('Venta de mercaderia', lx, y - 49, { size: 7, color: C_GRIS })
+  t('Tipo de Transaccion:', lx, y - 43, { font: fBold, size: 7 })
+  t('Venta de mercaderia', lx, y - 53, { size: 7, color: C_GRIS })
 
-  t('Moneda:', lx, y - datH + 8, { font: fBold, size: 7 })
-  t(moneda, lx + 38, y - datH + 8, { size: 7 })
+  t('Moneda:', lx, y - 63, { font: fBold, size: 7 })
+  t(moneda, lx + 38, y - 63, { size: 7 })
 
   // Columna derecha: receptor
   const rx2 = M + datColW + 5
@@ -387,23 +387,24 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
 
   if (qrBase64) {
     try {
-      const qrBytes = Buffer.from(qrBase64.replace(/^data:image\/png;base64,/, ''), 'base64')
+      const qrData  = String(qrBase64)
+      const qrB64   = qrData.includes('base64,') ? qrData.split('base64,')[1] : qrData
+      const qrBytes = Buffer.from(qrB64, 'base64')
       const qrImg   = await pdfDoc.embedPng(qrBytes)
       page.drawImage(qrImg, { x: M, y: y - qrSize, width: qrSize, height: qrSize })
-    } catch (e) { /* sin QR */ }
+    } catch (e) { console.log('QR embed error A4:', e.message) }
   }
 
   t('Consulte la validez de este Documento Electronico con el numero de CDC impreso', cdcX, y - 8, { size: 6.5, color: C_GRIS })
   t('https://ekuatia.set.gov.py/consultas', cdcX, y - 17, { size: 6.5, color: C_GRIS })
 
-  // CDC en dos líneas bien cortadas
-  const cdcFmt = fCDC(doc.cdc || '')
+  // CDC en dos líneas - 22 caracteres del CDC original por linea
+  const cdcRaw  = doc.cdc || ''
+  const cdc1    = fCDC(cdcRaw.substring(0, 22))
+  const cdc2    = fCDC(cdcRaw.substring(22))
   t('CDC:', cdcX, y - 30, { font: fBold, size: 7 })
-  // Dividir en dos líneas de ~22 chars cada una
-  const cdcLine1 = cdcFmt.substring(0, 27).trim()
-  const cdcLine2 = cdcFmt.substring(27).trim()
-  t(cdcLine1, cdcX, y - 41, { font: fBold, size: 8.5 })
-  t(cdcLine2, cdcX, y - 52, { font: fBold, size: 8.5 })
+  t(cdc1, cdcX, y - 41, { font: fBold, size: 8 })
+  t(cdc2, cdcX, y - 52, { font: fBold, size: 8 })
 
   const estadoColor = doc.estado === 'aprobado' ? C_VERDE : C_ROJO
   const estadoTxt   = doc.estado === 'aprobado' ? 'APROBADO POR LA SET' : (doc.estado || '').toUpperCase()
