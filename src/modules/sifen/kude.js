@@ -1,19 +1,20 @@
 // src/modules/sifen/kude.js
-// Generador de KUDE (Komprobante Unico de Documento Electronico)
-// Layout basado en el estandar SIFEN SET Paraguay
-// Formato A4, Ticket 80mm y Ticket 58mm usando pdf-lib
+// Generador de KUDE - Layout estandar SIFEN Paraguay
+// Soporte de logo por tenant desde Supabase Storage
+// Formatos: A4, Ticket 80mm, Ticket 58mm
 
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 
 // ── Colores ───────────────────────────────────────────────────────────────────
-const COLOR_NEGRO      = rgb(0.10, 0.10, 0.10)
-const COLOR_GRIS       = rgb(0.45, 0.45, 0.45)
-const COLOR_GRIS_CLARO = rgb(0.93, 0.93, 0.93)
-const COLOR_BLANCO     = rgb(1, 1, 1)
-const COLOR_BORDE      = rgb(0.70, 0.70, 0.70)
-const COLOR_VERDE      = rgb(0.13, 0.55, 0.13)
-const COLOR_ROJO       = rgb(0.75, 0.15, 0.15)
-const COLOR_HEADER     = rgb(0.20, 0.20, 0.20)
+const C_NEGRO      = rgb(0.08, 0.08, 0.08)
+const C_GRIS       = rgb(0.40, 0.40, 0.40)
+const C_GRIS_CLARO = rgb(0.94, 0.94, 0.94)
+const C_BLANCO     = rgb(1, 1, 1)
+const C_BORDE      = rgb(0.65, 0.65, 0.65)
+const C_HEADER_BG  = rgb(0.96, 0.96, 0.96)
+const C_VERDE      = rgb(0.10, 0.50, 0.10)
+const C_ROJO       = rgb(0.70, 0.10, 0.10)
+const C_AZUL       = rgb(0.10, 0.20, 0.50)
 
 // ── Tipos de documento ────────────────────────────────────────────────────────
 const TIPOS_DOC = {
@@ -26,46 +27,7 @@ const TIPOS_DOC = {
   7: 'NOTA DE REMISION ELECTRONICA',
 }
 
-// ── Formatters ────────────────────────────────────────────────────────────────
-function formatMoneda(valor, moneda = 'PYG') {
-  if (!valor && valor !== 0) return '0'
-  const n = Number(valor)
-  if (moneda === 'PYG') {
-    return n.toLocaleString('es-PY', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
-  }
-  return n.toLocaleString('es-PY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function formatFecha(fecha) {
-  if (!fecha) return ''
-  const d = new Date(fecha)
-  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
-}
-
-function formatHora(fecha) {
-  if (!fecha) return ''
-  const d = new Date(fecha)
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
-}
-
-function formatCDC(cdc) {
-  if (!cdc) return ''
-  return cdc.replace(/(.{4})/g, '$1 ').trim()
-}
-
-function truncar(texto, max) {
-  if (!texto) return ''
-  const t = String(texto)
-  return t.length > max ? t.substring(0, max - 1) + '.' : t
-}
-
-function tipoDocReceptor(tipo) {
-  if (tipo === 1) return 'RUC'
-  if (tipo === 2) return 'Pasaporte'
-  if (tipo === 3) return 'C.I.'
-  return ''
-}
-
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function parsePayload(doc) {
   if (!doc.payloadJson) return {}
   if (typeof doc.payloadJson === 'string') {
@@ -74,47 +36,106 @@ function parsePayload(doc) {
   return doc.payloadJson
 }
 
+function parseActEco(tenant) {
+  try {
+    const acts = typeof tenant.actividadesEconomicas === 'string'
+      ? JSON.parse(tenant.actividadesEconomicas)
+      : (tenant.actividadesEconomicas || [])
+    return Array.isArray(acts) ? acts : []
+  } catch (e) { return [] }
+}
+
+function tipoDocRec(tipo) {
+  if (tipo === 1) return 'RUC'
+  if (tipo === 2) return 'Pasaporte'
+  if (tipo === 3) return 'C.I.'
+  return ''
+}
+
+function formatNum(valor, moneda = 'PYG') {
+  if (!valor && valor !== 0) return '0'
+  const n = Number(valor)
+  if (moneda === 'PYG') return n.toLocaleString('es-PY', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+  return n.toLocaleString('es-PY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fFecha(fecha) {
+  if (!fecha) return ''
+  const d = new Date(fecha)
+  return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`
+}
+
+function fHora(fecha) {
+  if (!fecha) return ''
+  const d = new Date(fecha)
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
+}
+
+function fCDC(cdc) {
+  if (!cdc) return ''
+  return cdc.replace(/(.{4})/g, '$1 ').trim()
+}
+
+function trunc(text, max) {
+  const t = String(text ?? '')
+  return t.length > max ? t.substring(0, max - 2) + '..' : t
+}
+
+// Descargar logo desde URL
+async function fetchLogo(url) {
+  if (!url) return null
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    const buf = await res.arrayBuffer()
+    return Buffer.from(buf)
+  } catch (e) {
+    return null
+  }
+}
+
 // ── KUDE A4 ───────────────────────────────────────────────────────────────────
 export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   const pdfDoc = await PDFDocument.create()
   const page   = pdfDoc.addPage([595, 842])
   const { width, height } = page.getSize()
 
-  const fontBold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const fBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+  const fReg  = await pdfDoc.embedFont(StandardFonts.Helvetica)
 
-  const M = 28
-  let y = height - M
+  const M  = 25
+  const W  = width - M * 2
+  let y    = height - M
 
-  const txt = (text, x, yPos, opts = {}) => {
-    const { font = fontRegular, size = 7.5, color = COLOR_NEGRO } = opts
+  // ── Helpers de dibujo ───────────────────────────────────────────────────────
+  const t = (text, x, yy, opts = {}) => {
+    const { font = fReg, size = 7.5, color = C_NEGRO } = opts
     const s = String(text ?? '')
     if (!s) return
-    page.drawText(s, { x, y: yPos, size, font, color })
+    page.drawText(s, { x, y: yy, size, font, color })
   }
 
-  const txtR = (text, xRight, yPos, opts = {}) => {
-    const { font = fontRegular, size = 7.5, color = COLOR_NEGRO } = opts
-    const s = String(text ?? '')
-    if (!s) return
-    const w = font.widthOfTextAtSize(s, size)
-    page.drawText(s, { x: xRight - w, y: yPos, size, font, color })
-  }
-
-  const txtC = (text, x1, x2, yPos, opts = {}) => {
-    const { font = fontRegular, size = 7.5, color = COLOR_NEGRO } = opts
+  const tR = (text, xRight, yy, opts = {}) => {
+    const { font = fReg, size = 7.5, color = C_NEGRO } = opts
     const s = String(text ?? '')
     if (!s) return
     const w = font.widthOfTextAtSize(s, size)
-    page.drawText(s, { x: x1 + (x2 - x1 - w) / 2, y: yPos, size, font, color })
+    page.drawText(s, { x: xRight - w, y: yy, size, font, color })
   }
 
-  const lin = (x1, y1, x2, y2, thickness = 0.5, color = COLOR_BORDE) => {
-    page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness, color })
+  const tC = (text, x1, x2, yy, opts = {}) => {
+    const { font = fReg, size = 7.5, color = C_NEGRO } = opts
+    const s = String(text ?? '')
+    if (!s) return
+    const w = font.widthOfTextAtSize(s, size)
+    page.drawText(s, { x: x1 + (x2 - x1 - w) / 2, y: yy, size, font, color })
   }
 
-  const box = (x, yPos, w, h, opts = {}) => {
-    const o = { x, y: yPos, width: w, height: h, borderWidth: opts.borderWidth ?? 0.5, opacity: opts.opacity ?? 1 }
+  const ln = (x1, y1, x2, y2, th = 0.4, color = C_BORDE) =>
+    page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: th, color })
+
+  const bx = (x, yy, w, h, opts = {}) => {
+    const o = { x, y: yy, width: w, height: h, borderWidth: opts.bw ?? 0.4, opacity: opts.op ?? 1 }
     if (opts.fill)   o.color       = opts.fill
     if (opts.border) o.borderColor = opts.border
     page.drawRectangle(o)
@@ -125,454 +146,703 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   const receptor = payload.receptor || {}
   const tipoDoc  = doc.tipoDocumento || 1
   const moneda   = payload.moneda || 'PYG'
-  const W        = width - M * 2
+  const actEcos  = parseActEco(tenant)
 
-  // ── CABECERA ─────────────────────────────────────────────────────────────────
-  const headerH = 72
-  box(M, y - headerH, W, headerH, { border: COLOR_BORDE })
-  const divX = M + W * 0.55
-  lin(divX, y, divX, y - headerH)
+  // ── LOGO + CABECERA ─────────────────────────────────────────────────────────
+  const logoH   = 70
+  const logoW   = W * 0.52
+  const timW    = W * 0.48
 
-  // Lado izquierdo - datos emisor
-  txt(truncar(tenant.razonSocial || 'EMPRESA', 40), M + 6, y - 12, { font: fontBold, size: 9 })
-  txt(`RUC: ${tenant.ruc || ''}`, M + 6, y - 24, { font: fontBold, size: 8 })
-  txt(truncar(tenant.direccion || '', 50), M + 6, y - 34, { size: 7 })
-  if (tenant.telefono) txt(`Tel: ${tenant.telefono}`, M + 6, y - 43, { size: 7 })
-  if (tenant.email)    txt(truncar(tenant.email, 45), M + 6, y - 52, { size: 7 })
-  const actEco = Array.isArray(tenant.actividadesEconomicas)
-    ? tenant.actividadesEconomicas[0]?.descripcion || ''
-    : ''
-  if (actEco) txt(truncar(actEco, 50) + '.', M + 6, y - 62, { size: 6.5, color: COLOR_GRIS })
+  // Borde cabecera completa
+  bx(M, y - logoH, W, logoH, { border: C_BORDE })
+  ln(M + logoW, y, M + logoW, y - logoH)
 
-  // Lado derecho - timbrado y numero
-  txt('Timbrado', divX + 6, y - 10, { font: fontBold, size: 7.5 })
-  txtR(doc.timbradoNumero || '', M + W - 4, y - 10, { font: fontBold, size: 8 })
-  txt('Fecha Inicio de Vigencia:', divX + 6, y - 22, { size: 7 })
-  txtR(formatFecha(doc.timbradoVigenciaDesde || ''), M + W - 4, y - 22, { size: 7 })
+  // Intentar cargar logo
+  const logoUrl = tenant.logoUrl || tenant.logo_url || null
+  if (logoUrl) {
+    try {
+      const logoBytes = await fetchLogo(logoUrl)
+      if (logoBytes) {
+        let logoImg
+        try { logoImg = await pdfDoc.embedPng(logoBytes) } catch (e) {
+          try { logoImg = await pdfDoc.embedJpg(logoBytes) } catch (e2) { logoImg = null }
+        }
+        if (logoImg) {
+          const logoMaxH = 30
+          const logoMaxW = logoW * 0.45
+          const dims = logoImg.scale(1)
+          const scale = Math.min(logoMaxW / dims.width, logoMaxH / dims.height)
+          const lw = dims.width * scale
+          const lh = dims.height * scale
+          page.drawImage(logoImg, { x: M + 8, y: y - 8 - lh, width: lw, height: lh })
+        }
+      }
+    } catch (e) { /* sin logo */ }
+  }
+
+  // Datos emisor (debajo del logo)
+  const emisorY = y - 38
+  t(trunc(tenant.razonSocial || tenant.razon_social || '', 45), M + 8, emisorY, { font: fBold, size: 8.5 })
+  t(`RUC: ${tenant.ruc || ''}`, M + 8, emisorY - 11, { font: fBold, size: 7.5 })
+  t(trunc(tenant.direccion || '', 55), M + 8, emisorY - 21, { size: 7 })
+
+  // Actividades economicas — mostrar todas en lineas separadas
+  let actY = emisorY - 31
+  for (const act of actEcos) {
+    const actTxt = trunc(act.descripcion || '', 58) + '.'
+    t(actTxt, M + 8, actY, { size: 6.5, color: C_GRIS })
+    actY -= 9
+  }
+  if (tenant.telefono || tenant.email) {
+    const contacto = [tenant.telefono, tenant.email].filter(Boolean).join(' | ')
+    t(trunc(contacto, 58), M + 8, actY, { size: 6.5, color: C_GRIS })
+  }
+
+  // Lado derecho: Timbrado + Tipo documento + Numero
+  const rx = M + logoW + 6
+  const rw = M + W - 6
+
+  t('Timbrado', rx, y - 10, { font: fBold, size: 7 })
+  tR(String(doc.timbradoNumero || ''), rw, y - 10, { font: fBold, size: 8 })
+
+  t('Fecha Inicio de Vigencia:', rx, y - 21, { size: 7 })
+  tR(fFecha(doc.timbradoVigenciaDesde || ''), rw, y - 21, { size: 7 })
+
+  // Linea separadora
+  ln(M + logoW, y - 30, M + W, y - 30)
+
   const tipoLabel = TIPOS_DOC[tipoDoc] || 'DOCUMENTO ELECTRONICO'
-  txtC(tipoLabel, divX, M + W, y - 36, { font: fontBold, size: 8.5 })
-  txtC(`N  ${doc.numero || ''}`, divX, M + W, y - 49, { font: fontBold, size: 9 })
+  tC(tipoLabel, M + logoW, M + W, y - 43, { font: fBold, size: 9 })
+  tC(`N° ${doc.numero || ''}`, M + logoW, M + W, y - 57, { font: fBold, size: 10 })
 
-  y -= headerH
+  y -= logoH
 
-  // ── RECEPTOR ─────────────────────────────────────────────────────────────────
-  const recH = 58
-  box(M, y - recH, W, recH, { border: COLOR_BORDE })
-  const recColW = W * 0.60
-  const recDivX = M + recColW
-  lin(recDivX, y, recDivX, y - recH)
+  // ── DATOS DEL DOCUMENTO Y RECEPTOR ─────────────────────────────────────────
+  const datH    = 55
+  const datColW = W * 0.50
+  bx(M, y - datH, W, datH, { border: C_BORDE })
+  ln(M + datColW, y, M + datColW, y - datH)
 
-  txt('Fecha y hora de emision:', M + 4, y - 9, { font: fontBold, size: 7 })
-  txt(`${formatFecha(doc.creadoEn)} ${formatHora(doc.creadoEn)}`, M + 4, y - 18, { size: 7.5 })
-  txt('Condicion Venta:', M + 4, y - 28, { font: fontBold, size: 7 })
-  txt('Contado', M + 4, y - 37, { size: 7.5 })
-  txt('Tipo de Transaccion:', M + 4, y - 47, { font: fontBold, size: 7 })
-  txt('Venta de mercaderia', M + 4, y - recH + 6, { size: 6.5, color: COLOR_GRIS })
+  // Columna izquierda
+  const lx = M + 5
+  t('Fecha y hora de emision:', lx, y - 9, { font: fBold, size: 7 })
+  t(`${fFecha(doc.creadoEn)} ${fHora(doc.creadoEn)}`, lx, y - 18, { size: 7.5 })
 
-  const rrx = recDivX + 6
-  const tipoDocRec = tipoDocReceptor(receptor.tipo)
-  if (tipoDocRec) {
-    txt(`${tipoDocRec}:`, rrx, y - 9, { font: fontBold, size: 7 })
-    txt(receptor.documento || '0', rrx + 40, y - 9, { size: 7.5 })
+  t('Condicion Venta:', lx, y - 29, { font: fBold, size: 7 })
+  t('Contado', lx + 70, y - 29, { size: 7.5 })
+
+  t('Tipo de Transaccion:', lx, y - 40, { font: fBold, size: 7 })
+  t('Venta de mercaderia', lx, y - 49, { size: 7, color: C_GRIS })
+
+  t('Moneda:', lx, y - datH + 8, { font: fBold, size: 7 })
+  t(moneda, lx + 38, y - datH + 8, { size: 7 })
+
+  // Columna derecha: receptor
+  const rx2 = M + datColW + 5
+  const tipR = tipoDocRec(receptor.tipo)
+  if (tipR) {
+    t(`${tipR}:`, rx2, y - 9, { font: fBold, size: 7 })
+    t(receptor.documento || '', rx2 + 35, y - 9, { size: 7.5 })
   }
-  txt('Razon Social:', rrx, y - 20, { font: fontBold, size: 7 })
-  txt(truncar(receptor.razonSocial || 'CONSUMIDOR FINAL', 35), rrx, y - 29, { size: 7.5 })
+  t('Razon Social:', rx2, y - 21, { font: fBold, size: 7 })
+  t(trunc(receptor.razonSocial || 'CONSUMIDOR FINAL', 38), rx2, y - 30, { size: 7.5 })
   if (receptor.email) {
-    txt('Email:', rrx, y - 39, { font: fontBold, size: 7 })
-    txt(truncar(receptor.email, 35), rrx, y - 48, { size: 7 })
-  }
-  txt('Moneda:', M + 4, y - recH + 17, { font: fontBold, size: 7 })
-  txt(moneda, M + 4 + 35, y - recH + 17, { size: 7 })
-
-  y -= recH
-
-  // ── TABLA ITEMS ──────────────────────────────────────────────────────────────
-  const cols = {
-    cod:    { x: M,              w: W * 0.07 },
-    desc:   { x: M + W * 0.07,  w: W * 0.32 },
-    uni:    { x: M + W * 0.39,  w: W * 0.07 },
-    cant:   { x: M + W * 0.46,  w: W * 0.07 },
-    precio: { x: M + W * 0.53,  w: W * 0.13 },
-    desc2:  { x: M + W * 0.66,  w: W * 0.09 },
-    exenta: { x: M + W * 0.75,  w: W * 0.08 },
-    iva5:   { x: M + W * 0.83,  w: W * 0.08 },
-    iva10:  { x: M + W * 0.91,  w: W * 0.09 },
+    t('Email:', rx2, y - 41, { font: fBold, size: 7 })
+    t(trunc(receptor.email, 38), rx2, y - 50, { size: 7 })
   }
 
-  const rowH = 13
-  const thH  = 16
+  y -= datH
 
-  box(M, y - thH, W, thH, { fill: COLOR_HEADER })
-  const headers = [
-    { key: 'cod',    label: 'Cod.' },
-    { key: 'desc',   label: 'Descripcion' },
-    { key: 'uni',    label: 'U.Med.' },
-    { key: 'cant',   label: 'Cant.' },
-    { key: 'precio', label: 'Precio Unit.' },
-    { key: 'desc2',  label: 'Desc/Antic.' },
-    { key: 'exenta', label: 'Exentas' },
-    { key: 'iva5',   label: '5%' },
-    { key: 'iva10',  label: '10%' },
+  // ── TABLA DE ITEMS ──────────────────────────────────────────────────────────
+  // Columnas
+  const cols = [
+    { key: 'cod',    label: 'Cod.',        x: M,              w: W * 0.065, align: 'c' },
+    { key: 'desc',   label: 'Descripcion', x: M + W * 0.065,  w: W * 0.33,  align: 'l' },
+    { key: 'uni',    label: 'U.Med.',      x: M + W * 0.395,  w: W * 0.065, align: 'c' },
+    { key: 'cant',   label: 'Cant.',       x: M + W * 0.460,  w: W * 0.065, align: 'r' },
+    { key: 'precio', label: 'Precio Unit.',x: M + W * 0.525,  w: W * 0.12,  align: 'r' },
+    { key: 'dsc',    label: 'Desc/Antic.', x: M + W * 0.645,  w: W * 0.085, align: 'r' },
+    { key: 'exenta', label: 'Exentas',     x: M + W * 0.730,  w: W * 0.09,  align: 'r' },
+    { key: 'iva5',   label: '5%',          x: M + W * 0.820,  w: W * 0.085, align: 'r' },
+    { key: 'iva10',  label: '10%',         x: M + W * 0.905,  w: W * 0.095, align: 'r' },
   ]
-  for (const h of headers) {
-    const col = cols[h.key]
-    txtC(h.label, col.x, col.x + col.w, y - 5, { font: fontBold, size: 6.5, color: COLOR_BLANCO })
+
+  const thH  = 14
+  const rowH = 12
+
+  // Header tabla
+  bx(M, y - thH, W, thH, { fill: C_AZUL })
+  for (const col of cols) {
+    if (col.align === 'c') tC(col.label, col.x, col.x + col.w, y - 4.5, { font: fBold, size: 6, color: C_BLANCO })
+    else if (col.align === 'r') tR(col.label, col.x + col.w - 2, y - 4.5, { font: fBold, size: 6, color: C_BLANCO })
+    else t(col.label, col.x + 2, y - 4.5, { font: fBold, size: 6, color: C_BLANCO })
   }
-  for (const k of Object.keys(cols)) lin(cols[k].x, y, cols[k].x, y - thH, 0.3, COLOR_BORDE)
-  lin(M + W, y, M + W, y - thH, 0.3, COLOR_BORDE)
+  // Lineas verticales header
+  for (const col of cols) ln(col.x, y, col.x, y - thH, 0.3, C_BLANCO)
+  ln(M + W, y, M + W, y - thH, 0.3, C_BLANCO)
   y -= thH
 
+  // Filas items
   for (let i = 0; i < items.length; i++) {
-    const item  = items[i]
-    if (i % 2 === 1) box(M, y - rowH, W, rowH, { fill: COLOR_GRIS_CLARO })
-    const exenta = item.tasaIVA === 0  ? item.precioTotal : 0
-    const grav5  = item.tasaIVA === 5  ? item.precioTotal : 0
-    const grav10 = item.tasaIVA === 10 ? item.precioTotal : 0
-    txt(String(i + 1).padStart(3, '0'), cols.cod.x + 2, y - 9, { size: 7 })
-    txt(truncar(item.descripcion || '', 40), cols.desc.x + 2, y - 9, { size: 7 })
-    txtC('UNI', cols.uni.x, cols.uni.x + cols.uni.w, y - 9, { size: 7 })
-    txtR(String(item.cantidad), cols.cant.x + cols.cant.w - 2, y - 9, { size: 7 })
-    txtR(formatMoneda(item.precioUnitario, moneda), cols.precio.x + cols.precio.w - 2, y - 9, { size: 7 })
-    txtR('0', cols.desc2.x + cols.desc2.w - 2, y - 9, { size: 7 })
-    txtR(exenta > 0 ? formatMoneda(exenta, moneda) : '0', cols.exenta.x + cols.exenta.w - 2, y - 9, { size: 7 })
-    txtR(grav5  > 0 ? formatMoneda(grav5,  moneda) : '0', cols.iva5.x   + cols.iva5.w   - 2, y - 9, { size: 7 })
-    txtR(grav10 > 0 ? formatMoneda(grav10, moneda) : '0', cols.iva10.x  + cols.iva10.w  - 2, y - 9, { size: 7 })
-    for (const k of Object.keys(cols)) lin(cols[k].x, y, cols[k].x, y - rowH, 0.3, COLOR_BORDE)
-    lin(M + W, y, M + W, y - rowH, 0.3, COLOR_BORDE)
-    lin(M, y - rowH, M + W, y - rowH, 0.3, COLOR_BORDE)
+    const item = items[i]
+    if (i % 2 === 0) bx(M, y - rowH, W, rowH, { fill: C_GRIS_CLARO })
+
+    const exenta = item.tasaIVA === 0  ? Number(item.precioTotal) : 0
+    const grav5  = item.tasaIVA === 5  ? Number(item.precioTotal) : 0
+    const grav10 = item.tasaIVA === 10 ? Number(item.precioTotal) : 0
+
+    tC(String(i + 1).padStart(3, '0'), cols[0].x, cols[0].x + cols[0].w, y - 8, { size: 6.5 })
+    t(trunc(item.descripcion || '', 46), cols[1].x + 2, y - 8, { size: 6.5 })
+    tC('UNI', cols[2].x, cols[2].x + cols[2].w, y - 8, { size: 6.5 })
+    tR(String(item.cantidad), cols[3].x + cols[3].w - 2, y - 8, { size: 6.5 })
+    tR(formatNum(item.precioUnitario, moneda), cols[4].x + cols[4].w - 2, y - 8, { size: 6.5 })
+    tR('0', cols[5].x + cols[5].w - 2, y - 8, { size: 6.5 })
+    tR(exenta > 0 ? formatNum(exenta, moneda) : '0', cols[6].x + cols[6].w - 2, y - 8, { size: 6.5 })
+    tR(grav5  > 0 ? formatNum(grav5,  moneda) : '0', cols[7].x + cols[7].w - 2, y - 8, { size: 6.5 })
+    tR(grav10 > 0 ? formatNum(grav10, moneda) : '0', cols[8].x + cols[8].w - 2, y - 8, { size: 6.5 })
+
+    // Bordes fila
+    for (const col of cols) ln(col.x, y, col.x, y - rowH, 0.3, C_BORDE)
+    ln(M + W, y, M + W, y - rowH, 0.3, C_BORDE)
+    ln(M, y - rowH, M + W, y - rowH, 0.3, C_BORDE)
     y -= rowH
   }
 
-  const minRows = 5
-  for (let i = 0; i < Math.max(0, minRows - items.length); i++) {
-    for (const k of Object.keys(cols)) lin(cols[k].x, y, cols[k].x, y - rowH, 0.3, COLOR_BORDE)
-    lin(M + W, y, M + W, y - rowH, 0.3, COLOR_BORDE)
-    lin(M, y - rowH, M + W, y - rowH, 0.3, COLOR_BORDE)
+  // Filas vacías (mínimo 5)
+  const emptyRows = Math.max(0, 5 - items.length)
+  for (let i = 0; i < emptyRows; i++) {
+    for (const col of cols) ln(col.x, y, col.x, y - rowH, 0.3, C_BORDE)
+    ln(M + W, y, M + W, y - rowH, 0.3, C_BORDE)
+    ln(M, y - rowH, M + W, y - rowH, 0.3, C_BORDE)
     y -= rowH
   }
 
-  // ── SUBTOTALES ───────────────────────────────────────────────────────────────
-  const stH  = 14
+  // ── TOTALES ─────────────────────────────────────────────────────────────────
+  // Calcular desde items (fuente de verdad)
+  let totExenta = 0, totGrav5 = 0, totGrav10 = 0
+  for (const item of items) {
+    if (item.tasaIVA === 0)  totExenta += Number(item.precioTotal)
+    if (item.tasaIVA === 5)  totGrav5  += Number(item.precioTotal)
+    if (item.tasaIVA === 10) totGrav10 += Number(item.precioTotal)
+  }
+  const totalGen  = totExenta + totGrav5 + totGrav10 || Number(doc.montoTotal) || 0
+  const iva5amt   = Number(doc.montoIva5)  || 0
+  const iva10amt  = Number(doc.montoIva10) || 0
+
+  // Columnas de subtotales (alineadas con la tabla)
   const stCols = {
-    exenta: { x: M + W * 0.75, w: W * 0.08 },
-    iva5:   { x: M + W * 0.83, w: W * 0.08 },
-    iva10:  { x: M + W * 0.91, w: W * 0.09 },
+    exenta: cols[6],
+    iva5:   cols[7],
+    iva10:  cols[8],
   }
 
-  box(M, y - stH, W, stH, { fill: COLOR_GRIS_CLARO, border: COLOR_BORDE })
-  txt('SUBTOTALES:', M + 4, y - 9, { font: fontBold, size: 7 })
-  for (const [k, col] of Object.entries(stCols)) lin(col.x, y, col.x, y - stH, 0.3, COLOR_BORDE)
-  lin(M + W, y, M + W, y - stH, 0.3, COLOR_BORDE)
-  txtR(formatMoneda(doc.montoExento || 0, moneda), stCols.exenta.x + stCols.exenta.w - 2, y - 9, { size: 7 })
-  txtR(formatMoneda(Math.round((doc.montoIva5  || 0) * 21), moneda), stCols.iva5.x  + stCols.iva5.w  - 2, y - 9, { size: 7 })
-  txtR(formatMoneda(Math.round((doc.montoIva10 || 0) * 11), moneda), stCols.iva10.x + stCols.iva10.w - 2, y - 9, { size: 7 })
+  const stH = 13
+  // SUBTOTALES
+  bx(M, y - stH, W, stH, { fill: C_GRIS_CLARO, border: C_BORDE })
+  t('SUBTOTALES:', M + 5, y - 8, { font: fBold, size: 7 })
+  for (const [k, col] of Object.entries(stCols)) ln(col.x, y, col.x, y - stH, 0.3, C_BORDE)
+  ln(M + W, y, M + W, y - stH, 0.3, C_BORDE)
+  tR(formatNum(totExenta, moneda), stCols.exenta.x + stCols.exenta.w - 2, y - 8, { size: 7 })
+  tR(formatNum(totGrav5,  moneda), stCols.iva5.x   + stCols.iva5.w   - 2, y - 8, { size: 7 })
+  tR(formatNum(totGrav10, moneda), stCols.iva10.x  + stCols.iva10.w  - 2, y - 8, { size: 7 })
   y -= stH
 
-  box(M, y - stH, W, stH, { border: COLOR_BORDE })
-  txt('SUMA TOTAL:', M + 4, y - 9, { font: fontBold, size: 7 })
-  txtR(formatMoneda(doc.montoTotal || 0, moneda), M + W - 4, y - 9, { font: fontBold, size: 8 })
+  // SUMA TOTAL
+  bx(M, y - stH, W, stH, { border: C_BORDE })
+  t('SUMA TOTAL:', M + 5, y - 8, { font: fBold, size: 7 })
+  tR(formatNum(totalGen, moneda), M + W - 4, y - 8, { font: fBold, size: 8 })
   y -= stH
 
-  box(M, y - stH, W, stH, { border: COLOR_BORDE })
-  txt('DESCUENTO/ANTICIPO GLOBAL:', M + 4, y - 9, { size: 7 })
-  txtR('0', M + W - 4, y - 9, { size: 7 })
+  // DESCUENTO GLOBAL
+  bx(M, y - stH, W, stH, { border: C_BORDE })
+  t('DESCUENTO/ANTICIPO GLOBAL:', M + 5, y - 8, { size: 7 })
+  tR('0', M + W - 4, y - 8, { size: 7 })
   y -= stH
 
-  box(M, y - stH, W, stH, { fill: COLOR_HEADER, border: COLOR_BORDE })
-  txt('TOTAL DE LA OPERACION:', M + 4, y - 9, { font: fontBold, size: 8, color: COLOR_BLANCO })
-  txtR(formatMoneda(doc.montoTotal || 0, moneda), M + W - 4, y - 9, { font: fontBold, size: 9, color: COLOR_BLANCO })
+  // TOTAL DE LA OPERACION
+  bx(M, y - stH, W, stH, { fill: C_AZUL, border: C_BORDE })
+  t('TOTAL DE LA OPERACION:', M + 5, y - 8, { font: fBold, size: 8, color: C_BLANCO })
+  tR(formatNum(totalGen, moneda), M + W - 4, y - 8, { font: fBold, size: 9, color: C_BLANCO })
   y -= stH
 
-  // ── LIQUIDACION IVA ──────────────────────────────────────────────────────────
-  const ivaH   = 16
+  // EN LETRAS
+  bx(M, y - stH, W, stH, { border: C_BORDE })
+  t('EN LETRAS: GUARANIES ' + numALetras(totalGen), M + 5, y - 8, { size: 6.5, color: C_GRIS })
+  y -= stH
+
+  // LIQUIDACION IVA
+  const ivaH    = 16
   const ivaColW = W / 3
-  box(M, y - ivaH, W, ivaH, { border: COLOR_BORDE })
-  txt('LIQUIDACION IVA:', M + 4, y - 6, { font: fontBold, size: 7 })
-  txt(`(5%)  ${formatMoneda(doc.montoIva5 || 0, moneda)}`, M + 4, y - 13, { size: 7 })
-  txt(`(10%)  ${formatMoneda(doc.montoIva10 || 0, moneda)}`, M + ivaColW, y - 13, { size: 7 })
-  txt(`Total IVA:  ${formatMoneda((doc.montoIva5 || 0) + (doc.montoIva10 || 0), moneda)}`, M + ivaColW * 2, y - 13, { font: fontBold, size: 7 })
+  bx(M, y - ivaH, W, ivaH, { border: C_BORDE })
+  t('LIQUIDACION IVA:', M + 5, y - 5, { font: fBold, size: 7 })
+  t(`(5%)  ${formatNum(iva5amt, moneda)}`, M + 5, y - 13, { size: 7 })
+  t(`(10%)  ${formatNum(iva10amt, moneda)}`, M + ivaColW, y - 13, { size: 7 })
+  t(`Total IVA:  ${formatNum(iva5amt + iva10amt, moneda)}`, M + ivaColW * 2, y - 13, { font: fBold, size: 7 })
   y -= ivaH
 
   // ── QR + CDC ─────────────────────────────────────────────────────────────────
   y -= 8
-  const qrSize = 80
+  const qrSize = 78
+  const cdcX   = M + qrSize + 12
 
   if (qrBase64) {
     try {
       const qrBytes = Buffer.from(qrBase64.replace(/^data:image\/png;base64,/, ''), 'base64')
-      const qrImage = await pdfDoc.embedPng(qrBytes)
-      page.drawImage(qrImage, { x: M, y: y - qrSize, width: qrSize, height: qrSize })
+      const qrImg   = await pdfDoc.embedPng(qrBytes)
+      page.drawImage(qrImg, { x: M, y: y - qrSize, width: qrSize, height: qrSize })
     } catch (e) { /* sin QR */ }
   }
 
-  const cdcX = M + qrSize + 10
-  txt('Consulte la validez de este Documento Electronico con el numero de CDC impreso', cdcX, y - 8, { size: 6.5, color: COLOR_GRIS })
-  txt('https://ekuatia.set.gov.py/consultas', cdcX, y - 17, { size: 6.5, color: COLOR_GRIS })
-  txt('CDC:', cdcX, y - 30, { font: fontBold, size: 7 })
-  const cdcFormato = formatCDC(doc.cdc || '')
-  const mitad = Math.ceil(cdcFormato.length / 2)
-  txt(cdcFormato.substring(0, mitad), cdcX, y - 40, { font: fontBold, size: 8 })
-  txt(cdcFormato.substring(mitad).trim(), cdcX, y - 50, { font: fontBold, size: 8 })
+  t('Consulte la validez de este Documento Electronico con el numero de CDC impreso', cdcX, y - 8, { size: 6.5, color: C_GRIS })
+  t('https://ekuatia.set.gov.py/consultas', cdcX, y - 17, { size: 6.5, color: C_GRIS })
 
-  const estadoColor = doc.estado === 'aprobado' ? COLOR_VERDE : COLOR_ROJO
+  // CDC en dos líneas bien cortadas
+  const cdcFmt = fCDC(doc.cdc || '')
+  t('CDC:', cdcX, y - 30, { font: fBold, size: 7 })
+  // Dividir en dos líneas de ~22 chars cada una
+  const cdcLine1 = cdcFmt.substring(0, 27).trim()
+  const cdcLine2 = cdcFmt.substring(27).trim()
+  t(cdcLine1, cdcX, y - 41, { font: fBold, size: 8.5 })
+  t(cdcLine2, cdcX, y - 52, { font: fBold, size: 8.5 })
+
+  const estadoColor = doc.estado === 'aprobado' ? C_VERDE : C_ROJO
   const estadoTxt   = doc.estado === 'aprobado' ? 'APROBADO POR LA SET' : (doc.estado || '').toUpperCase()
-  txt(estadoTxt, cdcX, y - 63, { font: fontBold, size: 8, color: estadoColor })
+  t(estadoTxt, cdcX, y - 65, { font: fBold, size: 8.5, color: estadoColor })
   if (doc.estado === 'aprobado') {
-    txt(`Fecha: ${formatFecha(doc.sifenRespEn)} ${formatHora(doc.sifenRespEn)}`, cdcX, y - 73, { size: 7, color: COLOR_GRIS })
+    t(`Fecha: ${fFecha(doc.sifenRespEn)} ${fHora(doc.sifenRespEn)}`, cdcX, y - 75, { size: 7, color: C_GRIS })
   }
 
   y -= qrSize + 10
-  lin(M, y, M + W, y, 0.5, COLOR_BORDE)
+
+  // ── PIE ──────────────────────────────────────────────────────────────────────
+  ln(M, y, M + W, y, 0.5, C_BORDE)
+  y -= 9
+  t('Si su documento electronico presenta algun error puede solicitar la modificacion dentro de las 72 horas siguientes de la emision de este comprobante.', M, y, { size: 5.8, color: C_GRIS })
+  y -= 9
+  t('ESTE DOCUMENTO ES UNA REPRESENTACION GRAFICA DE UN DOCUMENTO ELECTRONICO (XML)', M, y, { font: fBold, size: 6.5 })
+  y -= 9
+  t('Generado por NODO - Plataforma de Facturacion Electronica Paraguay | nodo.com.py', M, y, { size: 6, color: C_GRIS })
+
+  return pdfDoc.save()
+}
+
+// ── Número a letras (simplificado para guaraníes) ─────────────────────────────
+function numALetras(n) {
+  const num = Math.round(Number(n) || 0)
+  if (num === 0) return 'CERO'
+  const unidades = ['','UNO','DOS','TRES','CUATRO','CINCO','SEIS','SIETE','OCHO','NUEVE',
+    'DIEZ','ONCE','DOCE','TRECE','CATORCE','QUINCE','DIECISEIS','DIECISIETE','DIECIOCHO','DIECINUEVE']
+  const decenas  = ['','','VEINTE','TREINTA','CUARENTA','CINCUENTA','SESENTA','SETENTA','OCHENTA','NOVENTA']
+  const centenas = ['','CIEN','DOSCIENTOS','TRESCIENTOS','CUATROCIENTOS','QUINIENTOS',
+    'SEISCIENTOS','SETECIENTOS','OCHOCIENTOS','NOVECIENTOS']
+
+  function grupo(n) {
+    let s = ''
+    if (n >= 100) { s += centenas[Math.floor(n/100)] + (n%100 > 0 ? ' ' : ''); n = n%100 }
+    if (n >= 20)  { s += decenas[Math.floor(n/10)] + (n%10 > 0 ? ' Y ' : ''); n = n%10 }
+    if (n > 0)    { s += unidades[n] }
+    return s.trim()
+  }
+
+  if (num < 1000) return grupo(num)
+  if (num < 1000000) {
+    const mil = Math.floor(num/1000)
+    const res = num % 1000
+    return (mil === 1 ? 'MIL' : grupo(mil) + ' MIL') + (res > 0 ? ' ' + grupo(res) : '')
+  }
+  const mill = Math.floor(num/1000000)
+  const res  = num % 1000000
+  return (mill === 1 ? 'UN MILLON' : grupo(mill) + ' MILLONES') + (res > 0 ? ' ' + numALetras(res) : '')
+}
+
+// ── KUDE Ticket 58mm ──────────────────────────────────────────────────────────
+export async function generarKudeTicket58(doc, tenant, qrBase64 = null) {
+  const pdfDoc   = await PDFDocument.create()
+  const mmToPt   = mm => mm * 2.8346
+  const pageW    = mmToPt(58)   // 164pt
+  const payload  = parsePayload(doc)
+  const items    = payload.items || []
+  const receptor = payload.receptor || {}
+  const moneda   = payload.moneda || 'PYG'
+  const tipoDoc  = doc.tipoDocumento || 1
+  const actEcos  = parseActEco(tenant)
+
+  // Calcular altura dinamica
+  const baseH   = 260
+  const itemsH  = items.length * 24
+  const actH    = actEcos.length * 8
+  const qrH     = qrBase64 ? pageW + 10 : 0
+  const pageH   = baseH + itemsH + actH + qrH
+  const page    = pdfDoc.addPage([pageW, pageH])
+
+  const fBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+  const fReg  = await pdfDoc.embedFont(StandardFonts.Helvetica)
+
+  const margin = 5
+  let y = pageH - margin
+  const maxW = pageW - margin * 2
+
+  const t = (text, x, yy, opts = {}) => {
+    const { font = fReg, size = 7, color = C_NEGRO } = opts
+    const s = String(text ?? '')
+    if (!s) return
+    page.drawText(s, { x, y: yy, size, font, color })
+  }
+
+  const tC = (text, yy, opts = {}) => {
+    const { font = fReg, size = 7, color = C_NEGRO } = opts
+    const s = String(text ?? '')
+    if (!s) return
+    const w = font.widthOfTextAtSize(s, size)
+    page.drawText(s, { x: Math.max(margin, (pageW - w) / 2), y: yy, size, font, color })
+  }
+
+  const tR = (text, xRight, yy, opts = {}) => {
+    const { font = fReg, size = 7, color = C_NEGRO } = opts
+    const s = String(text ?? '')
+    if (!s) return
+    const w = font.widthOfTextAtSize(s, size)
+    page.drawText(s, { x: xRight - w, y: yy, size, font, color })
+  }
+
+  const ln = (y1) => page.drawLine({
+    start: { x: margin, y: y1 }, end: { x: pageW - margin, y: y1 },
+    thickness: 0.4, color: C_BORDE
+  })
+
+  const trA = (text, font, size, maxW) => {
+    let s = String(text ?? '')
+    while (s.length > 0 && font.widthOfTextAtSize(s, size) > maxW) s = s.slice(0, -1)
+    return s
+  }
+
+  // ── Logo ────────────────────────────────────────────────────────────────────
+  const logoUrl = tenant.logoUrl || tenant.logo_url || null
+  if (logoUrl) {
+    try {
+      const logoBytes = await fetchLogo(logoUrl)
+      if (logoBytes) {
+        let logoImg
+        try { logoImg = await pdfDoc.embedPng(logoBytes) } catch (e) {
+          try { logoImg = await pdfDoc.embedJpg(logoBytes) } catch (e2) { logoImg = null }
+        }
+        if (logoImg) {
+          const logoMaxH = 25
+          const logoMaxW = pageW * 0.55
+          const dims = logoImg.scale(1)
+          const scale = Math.min(logoMaxW / dims.width, logoMaxH / dims.height)
+          const lw = dims.width * scale
+          const lh = dims.height * scale
+          page.drawImage(logoImg, { x: (pageW - lw) / 2, y: y - lh, width: lw, height: lh })
+          y -= lh + 4
+        }
+      }
+    } catch (e) { /* sin logo */ }
+  }
+
+  // ── Cabecera ─────────────────────────────────────────────────────────────────
+  tC(trA(tenant.razonSocial || tenant.razon_social || '', fBold, 8, maxW), y - 9, { font: fBold, size: 8 })
+  y -= 11
+  tC(`RUC: ${tenant.ruc || ''}`, y - 7, { size: 7 })
+  y -= 9
+  tC(trA(tenant.direccion || '', fReg, 6.5, maxW), y - 7, { size: 6.5, color: C_GRIS })
+  y -= 9
+
+  // Actividades economicas completas
+  for (const act of actEcos) {
+    tC(trA(act.descripcion || '', fReg, 6, maxW), y - 6, { size: 6, color: C_GRIS })
+    y -= 8
+  }
+
+  ln(y); y -= 5
+
+  // Tipo doc y numero
+  tC(TIPOS_DOC[tipoDoc] || 'DOC. ELECTRONICO', y - 7, { font: fBold, size: 7.5 })
   y -= 10
-  txt('Si su documento electronico presenta algun error puede solicitar la modificacion dentro de las 72 horas siguientes de la emision de este comprobante.', M, y, { size: 6, color: COLOR_GRIS })
+  tC(`N° ${doc.numero || ''}`, y - 7, { font: fBold, size: 9 })
+  y -= 12
+  tC(`Timbrado: ${doc.timbradoNumero || ''}`, y - 7, { size: 6.5 })
+  y -= 9
+  tC(`${fFecha(doc.creadoEn)} ${fHora(doc.creadoEn)}`, y - 7, { size: 7 })
   y -= 10
-  txt('ESTE DOCUMENTO ES UNA REPRESENTACION GRAFICA DE UN DOCUMENTO ELECTRONICO (XML)', M, y, { font: fontBold, size: 6.5 })
-  y -= 10
-  txt('Generado por NODO - Plataforma de Facturacion Electronica Paraguay | nodo.com.py', M, y, { size: 6, color: COLOR_GRIS })
+
+  ln(y); y -= 5
+
+  // Estado
+  const estadoTxt   = doc.estado === 'aprobado' ? 'APROBADO SET' : (doc.estado || '').toUpperCase()
+  const estadoColor = doc.estado === 'aprobado' ? C_VERDE : C_ROJO
+  tC(estadoTxt, y - 7, { font: fBold, size: 8, color: estadoColor })
+  y -= 11
+  ln(y); y -= 5
+
+  // Receptor
+  const tipR = tipoDocRec(receptor.tipo)
+  if (tipR && receptor.documento) {
+    t(`${tipR}: ${receptor.documento}`, margin, y - 7, { size: 6.5 })
+    y -= 9
+  }
+  if (receptor.razonSocial) {
+    t(trA(`Cliente: ${receptor.razonSocial}`, fReg, 6.5, maxW), margin, y - 7, { size: 6.5 })
+    y -= 9
+  }
+  ln(y); y -= 4
+
+  // ── Items ────────────────────────────────────────────────────────────────────
+  // Header
+  t('Descripcion', margin, y - 7, { font: fBold, size: 6.5 })
+  tR('IVA%', pageW - margin - 30, y - 7, { font: fBold, size: 6 })
+  tR('Total', pageW - margin, y - 7, { font: fBold, size: 6.5 })
+  y -= 9
+  ln(y); y -= 4
+
+  let calcTotExenta = 0, calcTotGrav5 = 0, calcTotGrav10 = 0
+
+  for (const item of items) {
+    const totalStr = formatNum(item.precioTotal, moneda)
+    const totalW   = fReg.widthOfTextAtSize(totalStr, 7)
+    const ivaStr   = `${item.tasaIVA}%`
+    const ivaW     = fReg.widthOfTextAtSize(ivaStr, 6)
+    const descDisp = maxW - totalW - ivaW - 8
+
+    let desc = String(item.descripcion || '')
+    while (desc.length > 0 && fReg.widthOfTextAtSize(desc, 6.5) > descDisp) desc = desc.slice(0, -1)
+
+    t(desc, margin, y - 7, { size: 6.5 })
+    tR(ivaStr, pageW - margin - totalW - 4, y - 7, { size: 6, color: C_GRIS })
+    tR(totalStr, pageW - margin, y - 7, { size: 7 })
+    y -= 9
+
+    // Segunda línea: cant x precio
+    const det = `${item.cantidad} x ${formatNum(item.precioUnitario, moneda)}`
+    t(trA(det, fReg, 6, maxW), margin, y - 7, { size: 6, color: C_GRIS })
+    y -= 9
+
+    // Acumular totales
+    if (item.tasaIVA === 0)  calcTotExenta += Number(item.precioTotal)
+    if (item.tasaIVA === 5)  calcTotGrav5  += Number(item.precioTotal)
+    if (item.tasaIVA === 10) calcTotGrav10 += Number(item.precioTotal)
+  }
+
+  const totalGen = calcTotExenta + calcTotGrav5 + calcTotGrav10 || Number(doc.montoTotal) || 0
+  const iva5a    = Number(doc.montoIva5)  || 0
+  const iva10a   = Number(doc.montoIva10) || 0
+
+  ln(y); y -= 4
+
+  // ── Totales ──────────────────────────────────────────────────────────────────
+  const fila = (label, valor, bold = false) => {
+    const f  = bold ? fBold : fReg
+    const sz = bold ? 8 : 7
+    t(label, margin, y - 7, { font: f, size: sz })
+    tR(String(valor), pageW - margin, y - 7, { font: f, size: sz })
+    y -= bold ? 11 : 9
+  }
+
+  if (calcTotExenta > 0) fila('Exentas:',   formatNum(calcTotExenta, moneda))
+  if (calcTotGrav5  > 0) {
+    fila('Gravadas 5%:', formatNum(calcTotGrav5, moneda))
+    fila('IVA 5%:',      formatNum(iva5a, moneda))
+  }
+  if (calcTotGrav10 > 0) {
+    fila('Gravadas 10%:', formatNum(calcTotGrav10, moneda))
+    fila('IVA 10%:',      formatNum(iva10a, moneda))
+  }
+
+  ln(y); y -= 3
+  fila(`TOTAL ${moneda}:`, formatNum(totalGen, moneda), true)
+  ln(y); y -= 8
+
+  // ── QR ────────────────────────────────────────────────────────────────────────
+  if (qrBase64) {
+    try {
+      const qrBytes = Buffer.from(qrBase64.replace(/^data:image\/png;base64,/, ''), 'base64')
+      const qrImg   = await pdfDoc.embedPng(qrBytes)
+      const qrSize  = pageW - margin * 2
+      page.drawImage(qrImg, { x: margin, y: y - qrSize, width: qrSize, height: qrSize })
+      y -= qrSize + 5
+      tC('Verificar en ekuatia.set.gov.py', y - 7, { size: 5.5, color: C_GRIS })
+      y -= 10
+    } catch (e) { /* sin QR */ }
+  }
+
+  // ── CDC ───────────────────────────────────────────────────────────────────────
+  ln(y); y -= 5
+  tC('CDC:', y - 7, { font: fBold, size: 6 }); y -= 9
+  const cdc = doc.cdc || ''
+  tC(cdc.substring(0, 11),  y - 6, { size: 5.5 }); y -= 8
+  tC(cdc.substring(11, 22), y - 6, { size: 5.5 }); y -= 8
+  tC(cdc.substring(22, 33), y - 6, { size: 5.5 }); y -= 8
+  tC(cdc.substring(33),     y - 6, { size: 5.5 }); y -= 10
+
+  ln(y); y -= 6
+  tC('NODO - Facturacion Electronica Paraguay', y - 6, { size: 5.5, color: C_GRIS })
 
   return pdfDoc.save()
 }
 
 // ── KUDE Ticket 80mm ──────────────────────────────────────────────────────────
 export async function generarKudeTicket(doc, tenant, qrBase64 = null) {
-  const pdfDoc  = await PDFDocument.create()
-  const mmToPt  = mm => mm * 2.8346
-  const pageW   = mmToPt(80)
-  const payload = parsePayload(doc)
-  const items   = payload.items || []
+  // Para 80mm usamos el mismo que 58mm pero con mas ancho
+  const pdfDoc   = await PDFDocument.create()
+  const mmToPt   = mm => mm * 2.8346
+  const pageW    = mmToPt(80)
+  const payload  = parsePayload(doc)
+  const items    = payload.items || []
   const receptor = payload.receptor || {}
-  const moneda  = payload.moneda || 'PYG'
-  const tipoDoc = doc.tipoDocumento || 1
-  const baseH   = 380
-  const itemsH  = items.length * 22
-  const qrH     = qrBase64 ? mmToPt(55) + 20 : 0
-  const pageH   = baseH + itemsH + qrH
-  const page    = pdfDoc.addPage([pageW, pageH])
+  const moneda   = payload.moneda || 'PYG'
+  const tipoDoc  = doc.tipoDocumento || 1
+  const actEcos  = parseActEco(tenant)
 
-  const fontBold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const baseH  = 300
+  const itemsH = items.length * 22
+  const qrH    = qrBase64 ? pageW + 10 : 0
+  const pageH  = baseH + itemsH + qrH
+  const page   = pdfDoc.addPage([pageW, pageH])
+
+  const fBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+  const fReg  = await pdfDoc.embedFont(StandardFonts.Helvetica)
+
   const margin = 6
   let y = pageH - margin
+  const maxW = pageW - margin * 2
 
-  const txt = (text, x, yPos, opts = {}) => {
-    const { font = fontRegular, size = 7, color = COLOR_NEGRO } = opts
+  const t = (text, x, yy, opts = {}) => {
+    const { font = fReg, size = 7, color = C_NEGRO } = opts
     const s = String(text ?? '')
     if (!s) return
-    page.drawText(s, { x, y: yPos, size, font, color })
+    page.drawText(s, { x, y: yy, size, font, color })
   }
-  const txtC = (text, yPos, opts = {}) => {
-    const { font = fontRegular, size = 7, color = COLOR_NEGRO } = opts
+  const tC = (text, yy, opts = {}) => {
+    const { font = fReg, size = 7, color = C_NEGRO } = opts
     const s = String(text ?? '')
     if (!s) return
     const w = font.widthOfTextAtSize(s, size)
-    page.drawText(s, { x: Math.max(margin, (pageW - w) / 2), y: yPos, size, font, color })
+    page.drawText(s, { x: Math.max(margin, (pageW - w) / 2), y: yy, size, font, color })
   }
-  const lin = (y1) => page.drawLine({ start: { x: margin, y: y1 }, end: { x: pageW - margin, y: y1 }, thickness: 0.4, color: COLOR_BORDE })
-  const maxW = pageW - margin * 2
-  const truncA = (text, font, size) => {
+  const tR = (text, xRight, yy, opts = {}) => {
+    const { font = fReg, size = 7, color = C_NEGRO } = opts
+    const s = String(text ?? '')
+    if (!s) return
+    const w = font.widthOfTextAtSize(s, size)
+    page.drawText(s, { x: xRight - w, y: yy, size, font, color })
+  }
+  const ln = (y1) => page.drawLine({ start: { x: margin, y: y1 }, end: { x: pageW - margin, y: y1 }, thickness: 0.4, color: C_BORDE })
+  const trA = (text, font, size) => {
     let s = String(text ?? '')
     while (s.length > 0 && font.widthOfTextAtSize(s, size) > maxW) s = s.slice(0, -1)
     return s
   }
 
-  txtC(truncA(tenant.razonSocial || 'EMPRESA', fontBold, 8), y - 10, { font: fontBold, size: 8 })
-  y -= 13
-  txtC(`RUC: ${tenant.ruc || ''}`, y - 7, { size: 7 })
-  y -= 10
-  txtC(truncA(tenant.direccion || '', fontRegular, 6.5), y - 7, { size: 6.5, color: COLOR_GRIS })
-  y -= 10
-  txtC(TIPOS_DOC[tipoDoc] || 'DOC. ELECTRONICO', y - 7, { font: fontBold, size: 7.5 })
-  y -= 11
-  txtC(`N  ${doc.numero || ''}`, y - 7, { font: fontBold, size: 8 })
-  y -= 11
-  txtC(`Timbrado: ${doc.timbradoNumero || ''}`, y - 7, { size: 6 })
-  y -= 9
-  txtC(`${formatFecha(doc.creadoEn)} ${formatHora(doc.creadoEn)}`, y - 7, { size: 6.5 })
-  y -= 11
-  lin(y); y -= 6
+  // Logo
+  const logoUrl = tenant.logoUrl || tenant.logo_url || null
+  if (logoUrl) {
+    try {
+      const logoBytes = await fetchLogo(logoUrl)
+      if (logoBytes) {
+        let logoImg
+        try { logoImg = await pdfDoc.embedPng(logoBytes) } catch (e) {
+          try { logoImg = await pdfDoc.embedJpg(logoBytes) } catch (e2) { logoImg = null }
+        }
+        if (logoImg) {
+          const logoMaxH = 28
+          const logoMaxW = pageW * 0.6
+          const dims = logoImg.scale(1)
+          const scale = Math.min(logoMaxW / dims.width, logoMaxH / dims.height)
+          const lw = dims.width * scale
+          const lh = dims.height * scale
+          page.drawImage(logoImg, { x: (pageW - lw) / 2, y: y - lh, width: lw, height: lh })
+          y -= lh + 4
+        }
+      }
+    } catch (e) { /* sin logo */ }
+  }
 
-  const estadoTxt   = doc.estado === 'aprobado' ? 'APROBADO SET' : (doc.estado || '').toUpperCase()
-  const estadoColor = doc.estado === 'aprobado' ? COLOR_VERDE : COLOR_ROJO
-  txtC(estadoTxt, y - 7, { font: fontBold, size: 7.5, color: estadoColor })
-  y -= 11
-  lin(y); y -= 6
+  tC(trA(tenant.razonSocial || tenant.razon_social || '', fBold, 9), y - 10, { font: fBold, size: 9 }); y -= 13
+  tC(`RUC: ${tenant.ruc || ''}`, y - 7, { size: 7.5 }); y -= 10
+  tC(trA(tenant.direccion || '', fReg, 7), y - 7, { size: 7, color: C_GRIS }); y -= 10
+  for (const act of actEcos) { tC(trA(act.descripcion || '', fReg, 6.5), y - 7, { size: 6.5, color: C_GRIS }); y -= 9 }
 
-  if (receptor.razonSocial) { txt(truncA(`Cliente: ${receptor.razonSocial}`, fontRegular, 6.5), margin, y - 7, { size: 6.5 }); y -= 10 }
-  if (receptor.documento) { txt(`${receptor.tipo === 1 ? 'RUC' : 'C.I.'}: ${receptor.documento}`, margin, y - 7, { size: 6.5 }); y -= 10 }
-  lin(y); y -= 5
+  ln(y); y -= 6
+  tC(TIPOS_DOC[tipoDoc] || 'DOC. ELECTRONICO', y - 7, { font: fBold, size: 8 }); y -= 11
+  tC(`N° ${doc.numero || ''}`, y - 7, { font: fBold, size: 9.5 }); y -= 13
+  tC(`Timbrado: ${doc.timbradoNumero || ''}`, y - 7, { size: 7 }); y -= 9
+  tC(`${fFecha(doc.creadoEn)} ${fHora(doc.creadoEn)}`, y - 7, { size: 7 }); y -= 11
 
-  txt('Descripcion', margin, y - 7, { font: fontBold, size: 6.5 })
-  const thW = fontBold.widthOfTextAtSize('Total', 6.5)
-  txt('Total', pageW - margin - thW, y - 7, { font: fontBold, size: 6.5 })
-  y -= 9; lin(y); y -= 4
+  ln(y); y -= 6
+  const eTxt   = doc.estado === 'aprobado' ? 'APROBADO SET' : (doc.estado || '').toUpperCase()
+  const eColor = doc.estado === 'aprobado' ? C_VERDE : C_ROJO
+  tC(eTxt, y - 7, { font: fBold, size: 8, color: eColor }); y -= 11
+  ln(y); y -= 6
 
+  const tipR = tipoDocRec(receptor.tipo)
+  if (tipR && receptor.documento) { t(`${tipR}: ${receptor.documento}`, margin, y - 7, { size: 7 }); y -= 10 }
+  if (receptor.razonSocial) { t(trA(`Cliente: ${receptor.razonSocial}`, fReg, 7), margin, y - 7, { size: 7 }); y -= 10 }
+  ln(y); y -= 5
+
+  t('Descripcion', margin, y - 7, { font: fBold, size: 7 })
+  tR('Total', pageW - margin, y - 7, { font: fBold, size: 7 })
+  y -= 9; ln(y); y -= 4
+
+  let cTotExenta = 0, cTotGrav5 = 0, cTotGrav10 = 0
   for (const item of items) {
-    const totalStr = formatMoneda(item.precioTotal, moneda)
-    const totalW   = fontRegular.widthOfTextAtSize(totalStr, 7)
+    const totalStr = formatNum(item.precioTotal, moneda)
+    const totalW   = fReg.widthOfTextAtSize(totalStr, 7.5)
     let desc = String(item.descripcion || '')
-    while (desc.length > 0 && fontRegular.widthOfTextAtSize(desc, 6.5) > maxW - totalW - 4) desc = desc.slice(0, -1)
-    txt(desc, margin, y - 7, { size: 6.5 })
-    txt(totalStr, pageW - margin - totalW, y - 7, { size: 7 })
+    while (desc.length > 0 && fReg.widthOfTextAtSize(desc, 7) > maxW - totalW - 6) desc = desc.slice(0, -1)
+    t(desc, margin, y - 7, { size: 7 })
+    tR(totalStr, pageW - margin, y - 7, { size: 7.5 })
     y -= 10
-    const det = `${item.cantidad} x ${formatMoneda(item.precioUnitario, moneda)} | IVA ${item.tasaIVA}%`
-    let detTxt = det
-    while (detTxt.length > 0 && fontRegular.widthOfTextAtSize(detTxt, 6) > maxW) detTxt = detTxt.slice(0, -1)
-    txt(detTxt, margin, y - 7, { size: 6, color: COLOR_GRIS })
-    y -= 10
+    const det = `${item.cantidad} x ${formatNum(item.precioUnitario, moneda)} | IVA ${item.tasaIVA}%`
+    t(trA(det, fReg, 6.5), margin, y - 7, { size: 6.5, color: C_GRIS }); y -= 10
+    if (item.tasaIVA === 0)  cTotExenta += Number(item.precioTotal)
+    if (item.tasaIVA === 5)  cTotGrav5  += Number(item.precioTotal)
+    if (item.tasaIVA === 10) cTotGrav10 += Number(item.precioTotal)
   }
 
-  lin(y); y -= 5
-  const fila = (label, valor, bold = false) => {
-    const f = bold ? fontBold : fontRegular
-    const sz = bold ? 8 : 7
-    txt(label, margin, y - 7, { font: f, size: sz })
-    const v = String(valor)
-    txt(v, pageW - margin - f.widthOfTextAtSize(v, sz), y - 7, { font: f, size: sz })
-    y -= bold ? 11 : 10
+  const totGen = cTotExenta + cTotGrav5 + cTotGrav10 || Number(doc.montoTotal) || 0
+  const iva5b  = Number(doc.montoIva5)  || 0
+  const iva10b = Number(doc.montoIva10) || 0
+
+  ln(y); y -= 5
+  const filaT = (label, valor, bold = false) => {
+    const f = bold ? fBold : fReg; const sz = bold ? 8.5 : 7.5
+    t(label, margin, y - 7, { font: f, size: sz })
+    tR(String(valor), pageW - margin, y - 7, { font: f, size: sz })
+    y -= bold ? 12 : 10
   }
-  if ((doc.montoExento || 0) > 0) fila('Exentas:', formatMoneda(doc.montoExento, moneda))
-  if ((doc.montoIva5   || 0) > 0) { fila('Grav. 5%:', formatMoneda(Math.round(doc.montoIva5 * 21), moneda)); fila('IVA 5%:', formatMoneda(doc.montoIva5, moneda)) }
-  if ((doc.montoIva10  || 0) > 0) { fila('Grav. 10%:', formatMoneda(Math.round(doc.montoIva10 * 11), moneda)); fila('IVA 10%:', formatMoneda(doc.montoIva10, moneda)) }
-  lin(y); y -= 4
-  fila(`TOTAL ${moneda}:`, formatMoneda(doc.montoTotal, moneda), true)
-  lin(y); y -= 8
+  if (cTotExenta > 0) filaT('Exentas:', formatNum(cTotExenta, moneda))
+  if (cTotGrav5  > 0) { filaT('Gravadas 5%:', formatNum(cTotGrav5, moneda)); filaT('IVA 5%:', formatNum(iva5b, moneda)) }
+  if (cTotGrav10 > 0) { filaT('Gravadas 10%:', formatNum(cTotGrav10, moneda)); filaT('IVA 10%:', formatNum(iva10b, moneda)) }
+  ln(y); y -= 3
+  filaT(`TOTAL ${moneda}:`, formatNum(totGen, moneda), true)
+  ln(y); y -= 10
 
   if (qrBase64) {
     try {
       const qrBytes = Buffer.from(qrBase64.replace(/^data:image\/png;base64,/, ''), 'base64')
-      const qrImage = await pdfDoc.embedPng(qrBytes)
+      const qrImg   = await pdfDoc.embedPng(qrBytes)
       const qrSize  = pageW - margin * 2
-      page.drawImage(qrImage, { x: margin, y: y - qrSize, width: qrSize, height: qrSize })
-      y -= qrSize + 4
-      txtC('Verificar en ekuatia.set.gov.py', y - 7, { size: 5.5, color: COLOR_GRIS })
-      y -= 10
+      page.drawImage(qrImg, { x: margin, y: y - qrSize, width: qrSize, height: qrSize })
+      y -= qrSize + 5
+      tC('Verificar en ekuatia.set.gov.py', y - 7, { size: 6, color: C_GRIS }); y -= 10
     } catch (e) { /* sin QR */ }
   }
 
-  lin(y); y -= 5
-  txtC('CDC:', y - 6, { font: fontBold, size: 5.5 }); y -= 9
+  ln(y); y -= 5
+  tC('CDC:', y - 7, { font: fBold, size: 6.5 }); y -= 9
   const cdc = doc.cdc || ''
-  txtC(cdc.substring(0, 15),  y - 6, { size: 5 }); y -= 7
-  txtC(cdc.substring(15, 30), y - 6, { size: 5 }); y -= 7
-  txtC(cdc.substring(30),     y - 6, { size: 5 }); y -= 10
-  lin(y); y -= 6
-  txtC('NODO - Facturacion Electronica Paraguay', y - 6, { size: 5.5, color: COLOR_GRIS })
-
-  return pdfDoc.save()
-}
-
-// ── KUDE Ticket 58mm ──────────────────────────────────────────────────────────
-export async function generarKudeTicket58(doc, tenant, qrBase64 = null) {
-  const pdfDoc  = await PDFDocument.create()
-  const mmToPt  = mm => mm * 2.8346
-  const pageW   = mmToPt(58)
-  const payload = parsePayload(doc)
-  const items   = payload.items || []
-  const receptor = payload.receptor || {}
-  const moneda  = payload.moneda || 'PYG'
-  const tipoDoc = doc.tipoDocumento || 1
-  const baseH   = 300
-  const itemsH  = items.length * 20
-  const qrH     = qrBase64 ? mmToPt(48) + 20 : 0
-  const pageH   = baseH + itemsH + qrH
-  const page    = pdfDoc.addPage([pageW, pageH])
-
-  const fontBold    = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const margin = 4
-  let y = pageH - margin
-
-  const txt = (text, x, yPos, opts = {}) => {
-    const { font = fontRegular, size = 6.5, color = COLOR_NEGRO } = opts
-    page.drawText(String(text ?? ''), { x, y: yPos, size, font, color })
-  }
-  const txtC = (text, yPos, opts = {}) => {
-    const { font = fontRegular, size = 6.5, color = COLOR_NEGRO } = opts
-    const s = String(text ?? '')
-    const w = font.widthOfTextAtSize(s, size)
-    page.drawText(s, { x: Math.max(margin, (pageW - w) / 2), y: yPos, size, font, color })
-  }
-  const lin = (y1) => page.drawLine({ start: { x: margin, y: y1 }, end: { x: pageW - margin, y: y1 }, thickness: 0.4, color: COLOR_BORDE })
-  const maxW = pageW - margin * 2
-  const truncA = (text, font, size) => {
-    let s = String(text ?? '')
-    while (s.length > 0 && font.widthOfTextAtSize(s, size) > maxW) s = s.slice(0, -1)
-    return s
-  }
-
-  txtC(truncA(tenant.razonSocial || 'EMPRESA', fontBold, 8), y - 10, { font: fontBold, size: 8 }); y -= 13
-  txtC(`RUC: ${tenant.ruc || ''}`, y - 7, { size: 6 }); y -= 9
-  txtC(TIPOS_DOC[tipoDoc] || 'DOC. ELECTRONICO', y - 7, { font: fontBold, size: 7 }); y -= 10
-  txtC(`N  ${doc.numero || ''}`, y - 7, { font: fontBold, size: 7.5 }); y -= 10
-  txtC(`${formatFecha(doc.creadoEn)} ${formatHora(doc.creadoEn)}`, y - 7, { size: 6 }); y -= 10
-  lin(y); y -= 5
-
-  const estadoTxt   = doc.estado === 'aprobado' ? 'APROBADO SET' : (doc.estado || '').toUpperCase()
-  const estadoColor = doc.estado === 'aprobado' ? COLOR_VERDE : COLOR_ROJO
-  txtC(estadoTxt, y - 7, { font: fontBold, size: 7, color: estadoColor }); y -= 10
-  lin(y); y -= 5
-
-  if (receptor.razonSocial) { txt(truncA(`Cliente: ${receptor.razonSocial}`, fontRegular, 6), margin, y - 7, { size: 6 }); y -= 9 }
-  lin(y); y -= 5
-
-  txt('Descripcion', margin, y - 7, { font: fontBold, size: 6 })
-  txt('Total', pageW - margin - fontBold.widthOfTextAtSize('Total', 6), y - 7, { font: fontBold, size: 6 })
-  y -= 8; lin(y); y -= 4
-
-  for (const item of items) {
-    const totalStr = formatMoneda(item.precioTotal, moneda)
-    const totalW   = fontRegular.widthOfTextAtSize(totalStr, 6.5)
-    let desc = String(item.descripcion || '')
-    while (desc.length > 0 && fontRegular.widthOfTextAtSize(desc, 6) > maxW - totalW - 4) desc = desc.slice(0, -1)
-    txt(desc, margin, y - 7, { size: 6 })
-    txt(totalStr, pageW - margin - totalW, y - 7, { size: 6.5 })
-    y -= 9
-    const det = `${item.cantidad} x ${formatMoneda(item.precioUnitario, moneda)} | IVA ${item.tasaIVA}%`
-    let detTxt = det
-    while (detTxt.length > 0 && fontRegular.widthOfTextAtSize(detTxt, 5.5) > maxW) detTxt = detTxt.slice(0, -1)
-    txt(detTxt, margin, y - 7, { size: 5.5, color: COLOR_GRIS })
-    y -= 9
-  }
-
-  lin(y); y -= 5
-  const fila = (label, valor, bold = false) => {
-    const f = bold ? fontBold : fontRegular
-    const sz = bold ? 7.5 : 6.5
-    txt(label, margin, y - 7, { font: f, size: sz })
-    const v = String(valor)
-    txt(v, pageW - margin - f.widthOfTextAtSize(v, sz), y - 7, { font: f, size: sz })
-    y -= bold ? 10 : 9
-  }
-  if ((doc.montoIva5  || 0) > 0) fila('IVA 5%:',  formatMoneda(doc.montoIva5,  moneda))
-  if ((doc.montoIva10 || 0) > 0) fila('IVA 10%:', formatMoneda(doc.montoIva10, moneda))
-  lin(y); y -= 3
-  fila(`TOTAL ${moneda}:`, formatMoneda(doc.montoTotal, moneda), true)
-  lin(y); y -= 8
-
-  if (qrBase64) {
-    try {
-      const qrBytes = Buffer.from(qrBase64.replace(/^data:image\/png;base64,/, ''), 'base64')
-      const qrImage = await pdfDoc.embedPng(qrBytes)
-      const qrSize  = pageW - margin * 2
-      page.drawImage(qrImage, { x: margin, y: y - qrSize, width: qrSize, height: qrSize })
-      y -= qrSize + 4
-    } catch (e) { /* sin QR */ }
-  }
-
-  lin(y); y -= 4
-  const cdc = doc.cdc || ''
-  txtC(cdc.substring(0, 15),  y - 6, { size: 4.8 }); y -= 7
-  txtC(cdc.substring(15, 30), y - 6, { size: 4.8 }); y -= 7
-  txtC(cdc.substring(30),     y - 6, { size: 4.8 }); y -= 9
-  lin(y); y -= 5
-  txtC('NODO - Facturacion Electronica', y - 6, { size: 5, color: COLOR_GRIS })
+  tC(cdc.substring(0, 15),  y - 6, { size: 6 }); y -= 8
+  tC(cdc.substring(15, 30), y - 6, { size: 6 }); y -= 8
+  tC(cdc.substring(30),     y - 6, { size: 6 }); y -= 10
+  ln(y); y -= 6
+  tC('NODO - Facturacion Electronica Paraguay', y - 6, { size: 6, color: C_GRIS })
 
   return pdfDoc.save()
 }
 
 // ── Funcion unificada ─────────────────────────────────────────────────────────
 export async function generarKude(doc, tenant, formato = 'a4', qrBase64 = null) {
-  if (formato === 'ticket58')                    return generarKudeTicket58(doc, tenant, qrBase64)
+  if (formato === 'ticket58')                         return generarKudeTicket58(doc, tenant, qrBase64)
   if (formato === 'ticket' || formato === 'ticket80') return generarKudeTicket(doc, tenant, qrBase64)
   return generarKudeA4(doc, tenant, qrBase64)
 }
