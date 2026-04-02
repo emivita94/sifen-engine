@@ -184,18 +184,23 @@ export async function documentosRoutes(fastify) {
 
     // Generar QR desde el link del XML firmado
     let qrBase64 = null
-    if (doc.estado === 'aprobado' && doc.xmlFirmado) {
+    const xmlParaQR = doc.xmlFirmado || ''
+    if (doc.estado === 'aprobado' && xmlParaQR) {
       try {
-        const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
-if (qrMatch) {
-  const qrUrl = qrMatch[1]
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-  const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-  qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
-}
-      } catch (e) {}
+        const qrMatch = String(xmlParaQR).match(/dCarQR>([^<]+)</)
+        if (qrMatch) {
+          const qrUrl = qrMatch[1]
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+          const QRCode = await import('qrcode')
+          qrBase64 = await QRCode.default.toDataURL(qrUrl, {
+            type: 'image/png',
+            width: 200,
+            margin: 1,
+          })
+        }
+      } catch (e) { console.log('QR error:', e.message) }
     }
 
     try {
