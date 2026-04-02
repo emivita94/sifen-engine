@@ -97,13 +97,14 @@ export async function generarKudeA4(doc, tenant, qrBase64 = null) {
   }
 
   const rect = (x, yPos, w, h, opts = {}) => {
-    page.drawRectangle({
+    const rectOpts = {
       x, y: yPos, width: w, height: h,
-      color: opts.fill || null,
-      borderColor: opts.border || null,
       borderWidth: opts.borderWidth || 0.5,
       opacity: opts.opacity || 1,
-    })
+    }
+    if (opts.fill)   rectOpts.color       = opts.fill
+    if (opts.border) rectOpts.borderColor = opts.border
+    page.drawRectangle(rectOpts)
   }
 
   const payload  = doc.payloadJson || {}
