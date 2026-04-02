@@ -187,10 +187,14 @@ export async function documentosRoutes(fastify) {
     if (doc.estado === 'aprobado' && doc.xmlFirmado) {
       try {
         const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
-        if (qrMatch) {
-          const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-          qrBase64 = await qrgen.generateQR(qrMatch[1], { type: 'image/png', quality: 0.92 })
-        }
+if (qrMatch) {
+  const qrUrl = qrMatch[1]
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+  const qrgen = (await import('facturacionelectronicapy-qrgen')).default
+  qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
+}
       } catch (e) {}
     }
 
