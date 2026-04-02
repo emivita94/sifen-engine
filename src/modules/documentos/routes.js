@@ -194,6 +194,7 @@ if (qrMatch) {
     .replace(/&gt;/g, '>')
   const qrgen = (await import('facturacionelectronicapy-qrgen')).default
   qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
+  console.log('QR BASE64 length:', qrBase64 ? qrBase64.length : 'null')
 }
       } catch (e) {}
     }
