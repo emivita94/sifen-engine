@@ -199,8 +199,9 @@ export async function documentosRoutes(fastify) {
             .replace(/&amp;/g, '&')
             .replace(/&lt;/g, '<')
             .replace(/&gt;/g, '>')
-          const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-          qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
+         const modQrgen = await import('facturacionelectronicapy-qrgen')
+const qrgen = modQrgen.default?.default || modQrgen.default || modQrgen
+qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
           console.log('QR BASE64 length:', qrBase64 ? qrBase64.length : 'null')
         }
       } catch (e) { console.log('QR ERROR:', e.message) }
