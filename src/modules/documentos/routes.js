@@ -183,20 +183,27 @@ export async function documentosRoutes(fastify) {
     }
 
     // Generar QR desde el link del XML firmado
+
+   // Generar QR desde el link del XML firmado
+    console.log('XML FIRMADO length:', doc.xmlFirmado ? String(doc.xmlFirmado).length : 'null')
+    console.log('XML APROBADO length:', doc.xmlAprobado ? String(doc.xmlAprobado).length : 'null')
+
     let qrBase64 = null
-    if (doc.estado === 'aprobado' && doc.xmlFirmado) {
+    const xmlParaQR = doc.xmlFirmado || doc.xmlAprobado || ''
+    if (doc.estado === 'aprobado' && xmlParaQR) {
       try {
-        const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
-if (qrMatch) {
-  const qrUrl = qrMatch[1]
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-  const qrgen = (await import('facturacionelectronicapy-qrgen')).default
-  qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
-  console.log('QR BASE64 length:', qrBase64 ? qrBase64.length : 'null')
-}
-      } catch (e) {}
+        const qrMatch = String(xmlParaQR).match(/dCarQR>([^<]+)</)
+        console.log('QR MATCH:', qrMatch ? qrMatch[1].substring(0, 80) : 'null')
+        if (qrMatch) {
+          const qrUrl = qrMatch[1]
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+          const qrgen = (await import('facturacionelectronicapy-qrgen')).default
+          qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
+          console.log('QR BASE64 length:', qrBase64 ? qrBase64.length : 'null')
+        }
+      } catch (e) { console.log('QR ERROR:', e.message) }
     }
 
     try {
