@@ -189,23 +189,22 @@ export async function documentosRoutes(fastify) {
     console.log('XML APROBADO length:', doc.xmlAprobado ? String(doc.xmlAprobado).length : 'null')
 
     let qrBase64 = null
-    const xmlParaQR = doc.xmlFirmado || doc.xmlAprobado || ''
-    if (doc.estado === 'aprobado' && xmlParaQR) {
-      try {
-        const qrMatch = String(xmlParaQR).match(/dCarQR>([^<]+)</)
-        console.log('QR MATCH:', qrMatch ? qrMatch[1].substring(0, 80) : 'null')
-        if (qrMatch) {
-          const qrUrl = qrMatch[1]
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-         const modQrgen = await import('facturacionelectronicapy-qrgen')
-const qrgen = modQrgen.default?.default || modQrgen.default || modQrgen
-qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
-          console.log('QR BASE64 length:', qrBase64 ? qrBase64.length : 'null')
-        }
-      } catch (e) { console.log('QR ERROR:', e.message) }
+if (doc.estado === 'aprobado' && doc.xmlFirmado) {
+  try {
+    const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
+    if (qrMatch) {
+      const qrUrl = qrMatch[1].replace(/&amp;/g, '&')
+      // Generar QR directamente desde la URL usando la librería qrcode
+      const QRCode = await import('qrcode')
+      qrBase64 = await QRCode.default.toDataURL(qrUrl, {
+        type: 'image/png',
+        width: 200,
+        margin: 1,
+      })
+      console.log('QR generado OK, length:', qrBase64.length)
     }
+  } catch (e) { console.log('QR ERROR:', e.message) }
+}
 
     try {
       const pdfBytes = await generarKude(doc, tenant, formato, qrBase64)
