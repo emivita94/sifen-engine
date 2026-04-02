@@ -301,14 +301,133 @@ export async function procesarDocumento(tenantId, payload) {
   return respuestaDE(docFinal)
 }
 
-export async function cancelarDocumento(tenantId, cdc) {
+export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación solicitada por el emisor') {
+  await cargarLibrerias()
   const sql = getDb()
+
+  // ── 1. Validaciones ─────────────────────────────────────────────────────────
   const [doc] = await sql`SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${tenantId}`
-  if (!doc) return respuestaError('Documento no encontrado')
+  if (!doc)                      return respuestaError('Documento no encontrado')
   if (doc.estado !== 'aprobado') return respuestaError(`No se puede cancelar un DE en estado: ${doc.estado}`)
-  const [docCancelado] = await sql`
-    UPDATE documentos SET estado = 'cancelado', actualizado_en = now() WHERE id = ${doc.id} RETURNING *
+
+  // ── 2. Tenant + certificado ─────────────────────────────────────────────────
+  const [tenant] = await sql`
+    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_password,
+           csc, id_csc
+    FROM tenants WHERE id = ${tenantId} AND activo = true
   `
+  if (!tenant)                return respuestaError('Tenant no encontrado')
+  if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
+
+  // ── 3. Generar XML del evento de cancelación ─────────────────────────────────
+  const env         = tenant.ambiente === 'prod' ? 'prod' : 'test'
+  const idCSC       = tenant.idCsc || '0001'
+  const fechaEvento = ahoraParaguay().toISOString().substring(0, 19)
+
+  // Params del evento — mismo formato que el DE
+  const [timbrado] = await sql`
+    SELECT t.*, e.codigo AS est_codigo, p.codigo AS punto_codigo
+    FROM timbrados t
+    JOIN establecimientos e ON e.id = t.establecimiento_id
+    JOIN puntos_expedicion p ON p.id = t.punto_id
+    WHERE t.id = ${doc.timbradoId}
+  `
+
+  const params = {
+    version:        150,
+    ruc:            tenant.ruc,
+    razonSocial:    tenant.razonSocial,
+    timbradoNumero: timbrado?.numeroTimbrado || '',
+    timbradoFecha:  timbrado?.vigenciaDesde
+      ? (timbrado.vigenciaDesde instanceof Date
+          ? timbrado.vigenciaDesde.toISOString().split('T')[0]
+          : String(timbrado.vigenciaDesde).split('T')[0])
+      : '',
+    tipoContribuyente: 2,
+    establecimientos: [{
+      codigo: timbrado?.estCodigo?.toString().padStart(3,'0') || '001',
+      direccion: '', numeroCasa: '0',
+      departamento: 1, departamentoDescripcion: 'CAPITAL',
+      distrito: 1, distritoDescripcion: 'ASUNCION (DISTRITO)',
+      ciudad: 1, ciudadDescripcion: 'ASUNCION (DISTRITO)',
+      telefono: tenant.telefono || '', email: tenant.email || '',
+    }],
+  }
+
+  const dataEvento = {
+    Id:   cdc,
+    fecha: fechaEvento,
+    tipoEvento: 1,           // 1 = Cancelación
+    motivo,
+  }
+
+  let xmlEvento, xmlEventoFirmado
+  const tmpCert = join('/tmp', `cert_cancel_${tenantId}_${Date.now()}.p12`)
+
+  try {
+    const certBuffer   = desencriptar(tenant.certificadoEnc)
+    const certPassword = tenant.certPassword || ''
+    writeFileSync(tmpCert, certBuffer)
+
+    // Generar XML del evento
+    xmlEvento = await _xmlgen.generateXMLEvento(params, dataEvento, { version: 150 })
+    console.log('XML Evento cancelación generado, length:', xmlEvento?.length)
+
+    if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
+
+    // Firmar el evento
+    xmlEventoFirmado = await _xmlsign.signXML(xmlEvento, tmpCert, certPassword, true)
+
+    if (!xmlEventoFirmado?.includes('</Signature>')) {
+      throw new Error('La firma del evento no se generó correctamente')
+    }
+
+    // Enviar el evento a SIFEN
+    const r = await _setapi.recibeLote(
+      1,
+      [xmlEventoFirmado],
+      env,
+      tmpCert,
+      certPassword,
+      { timeout: config.sifen.timeoutMs }
+    )
+
+    console.log('EVENTO CANCELACION RESPONSE:', JSON.stringify(r))
+
+    const respLote   = r?.['ns2:rResEnviLoteDe'] || r
+    const codigoLote = respLote?.['ns2:dCodRes']
+    const numLote    = respLote?.['ns2:dProtConsLote']
+
+    let aprobado = false, codigoFinal = codigoLote, mensajeFinal = respLote?.['ns2:dMsgRes'] || ''
+
+    if (numLote && codigoLote === '0300') {
+      console.log(`Lote evento ${numLote} recibido — consultando en 5 segundos...`)
+      await esperar(5000)
+      const resultado = await consultarLote(numLote, env, tmpCert, certPassword)
+      aprobado     = resultado.aprobado
+      codigoFinal  = resultado.codigo
+      mensajeFinal = resultado.mensaje
+    }
+
+    if (!aprobado) {
+      return respuestaError(`La SET no aprobó la cancelación: ${mensajeFinal} (${codigoFinal})`)
+    }
+
+  } catch (err) {
+    console.error('Error cancelando documento:', err.message)
+    return respuestaError('Error enviando cancelación a SIFEN: ' + err.message)
+  } finally {
+    try { unlinkSync(tmpCert) } catch (e) {}
+  }
+
+  // ── 4. Actualizar estado en BD ──────────────────────────────────────────────
+  const [docCancelado] = await sql`
+    UPDATE documentos
+    SET estado = 'cancelado', actualizado_en = now()
+    WHERE id = ${doc.id}
+    RETURNING *
+  `
+
   dispararWebhook(docCancelado, 'de.cancelado').catch(() => {})
   return respuestaDE(docCancelado)
 }

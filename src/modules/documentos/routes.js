@@ -1,5 +1,5 @@
 // src/modules/documentos/routes.js
-import { procesarDocumento } from '../sifen/motor.js'
+import { procesarDocumento, cancelarDocumento } from '../sifen/motor.js'
 import { getDb } from '../../db/connection.js'
 import { generarKude } from '../sifen/kude.js'
 import { hashApiKey } from '../../shared/crypto/index.js'
@@ -167,7 +167,7 @@ export async function documentosRoutes(fastify) {
 
     const [tenant] = await sql`
       SELECT ruc, razon_social, direccion, email, telefono,
-             actividades_economicas, nombre_fantasia, logo_url
+             actividades_economicas, nombre_fantasia
       FROM tenants WHERE id = ${request.tenant.id}
     `
 
@@ -184,23 +184,18 @@ export async function documentosRoutes(fastify) {
 
     // Generar QR desde el link del XML firmado
     let qrBase64 = null
-    const xmlParaQR = doc.xmlFirmado || ''
-    if (doc.estado === 'aprobado' && xmlParaQR) {
+    if (doc.estado === 'aprobado' && doc.xmlFirmado) {
       try {
-        const qrMatch = String(xmlParaQR).match(/dCarQR>([^<]+)</)
-        if (qrMatch) {
-          const qrUrl = qrMatch[1]
-            .replace(/&amp;/g, '&')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-          const QRCode = await import('qrcode')
-          qrBase64 = await QRCode.default.toDataURL(qrUrl, {
-            type: 'image/png',
-            width: 200,
-            margin: 1,
-          })
-        }
-      } catch (e) { console.log('QR error:', e.message) }
+        const qrMatch = String(doc.xmlFirmado).match(/dCarQR>([^<]+)</)
+if (qrMatch) {
+  const qrUrl = qrMatch[1]
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+  const qrgen = (await import('facturacionelectronicapy-qrgen')).default
+  qrBase64 = await qrgen.generateQR(qrUrl, { type: 'image/png', quality: 0.92 })
+}
+      } catch (e) {}
     }
 
     try {
@@ -217,16 +212,18 @@ export async function documentosRoutes(fastify) {
 
   // ─── POST /documentos/:cdc/cancelar ──────────────────────────────────────
   fastify.post('/:cdc/cancelar', async (request, reply) => {
-    const sql = getDb()
     const { cdc } = request.params
-
-    const [doc] = await sql`SELECT id, estado FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}`
-    if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
-    if (doc.estado !== 'aprobado') {
-      return reply.status(400).send({ error: `No se puede cancelar un documento en estado: ${doc.estado}` })
+    const motivo  = request.body?.motivo || 'Cancelacion solicitada por el emisor'
+    try {
+      const resultado = await cancelarDocumento(request.tenant.id, cdc, motivo)
+      if (!resultado.ok) {
+        return reply.status(422).send({ error: resultado.error || 'No se pudo cancelar', mensaje: resultado.mensaje })
+      }
+      return { ok: true, data: resultado }
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error cancelando documento', mensaje: err.message })
     }
-    await sql`UPDATE documentos SET estado = 'cancelado' WHERE id = ${doc.id}`
-    return { ok: true, mensaje: 'Cancelación enviada a SIFEN' }
   })
 
 }
