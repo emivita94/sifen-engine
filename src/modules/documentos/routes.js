@@ -22,26 +22,26 @@ const receptorSchema = z.object({
 })
 
 const emitirSchema = z.object({
-  tipoDocumento:    z.number().int().default(1),
-  tipoTransaccion:  z.number().int().default(1),
-  fecha:            z.string().optional(),
-  moneda:           z.string().default('PYG'),
-  receptor:         receptorSchema,
-  items:            z.array(itemSchema).min(1),
+  tipoDocumento:     z.number().int().default(1),
+  tipoTransaccion:   z.number().int().default(1),
+  fecha:             z.string().optional(),
+  moneda:            z.string().default('PYG'),
+  receptor:          receptorSchema,
+  items:             z.array(itemSchema).min(1),
   referenciaExterna: z.string().max(100).optional(),
   webhookUrl:        z.string().url().optional(),
 }).passthrough()
 
-// ── Auth directo para este scope ──────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 async function autenticar(request, reply) {
   const sql = getDb()
   const authHeader = request.headers['x-api-key'] || request.headers['authorization']
   if (!authHeader) {
-    return reply.status(401).send({ error: 'Sin autenticación. Incluí el header X-API-Key.' })
+    return reply.status(401).send({ error: 'Sin autenticacion. Inclui el header X-API-Key.' })
   }
   const key = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
   if (!key.startsWith('sk_')) {
-    return reply.status(401).send({ error: 'Formato de API key inválido' })
+    return reply.status(401).send({ error: 'Formato de API key invalido' })
   }
 
   const hash = hashApiKey(key)
@@ -64,7 +64,7 @@ async function autenticar(request, reply) {
     WHERE ak.key_hash = ${hash}
   `
 
-  if (!row)              return reply.status(401).send({ error: 'API key inválido' })
+  if (!row)              return reply.status(401).send({ error: 'API key invalido' })
   if (!row.activa)       return reply.status(401).send({ error: 'API key desactivado' })
   if (!row.tenantActivo) return reply.status(403).send({ error: 'Tenant inactivo' })
 
@@ -80,7 +80,29 @@ async function autenticar(request, reply) {
   }
 
   sql`UPDATE api_keys SET ultimo_uso = now() WHERE id = ${row.keyId}`.catch(() => {})
-  // ─── POST /documentos/inutilizar ──────────────────────────────────────────
+}
+
+export async function documentosRoutes(fastify) {
+
+  fastify.addHook('preHandler', autenticar)
+
+  // ─── POST /documentos ─────────────────────────────────────────────────────
+  fastify.post('/', async (request, reply) => {
+    const parse = emitirSchema.safeParse(request.body)
+    if (!parse.success) {
+      return reply.status(400).send({ error: 'Datos invalidos', detalles: parse.error.flatten() })
+    }
+    try {
+      const resultado = await procesarDocumento(request.tenant.id, parse.data)
+      return reply.status(resultado.ok ? 201 : 422).send({ ok: resultado.ok, data: resultado })
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error procesando documento', mensaje: err.message })
+    }
+  })
+
+  // ─── POST /documentos/inutilizar ─────────────────────────────────────────
+  // IMPORTANTE: debe ir antes de /:cdc para que Fastify no lo confunda
   fastify.post('/inutilizar', async (request, reply) => {
     const { tipoDocumento, establecimiento, punto, desde, hasta, motivo } = request.body || {}
     if (!desde || !hasta) {
@@ -94,39 +116,17 @@ async function autenticar(request, reply) {
         tipoDocumento: tipoDocumento || 1,
         establecimiento,
         punto,
-        desde: Number(desde),
-        hasta: Number(hasta),
+        desde:  Number(desde),
+        hasta:  Number(hasta),
         motivo: motivo || 'Documentos no utilizados',
       })
       if (!resultado.ok) {
-        return reply.status(422).send({ error: resultado.error || 'No se pudo inutilizar' })
+        return reply.status(422).send({ error: resultado.error?.mensaje || 'No se pudo inutilizar' })
       }
       return { ok: true, data: resultado }
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send({ error: 'Error inutilizando documentos', mensaje: err.message })
-    }
-  })
-
-}
-
-export async function documentosRoutes(fastify) {
-
-  // Auth en todas las rutas de este plugin
-  fastify.addHook('preHandler', autenticar)
-
-  // ─── POST /documentos ─────────────────────────────────────────────────────
-  fastify.post('/', async (request, reply) => {
-    const parse = emitirSchema.safeParse(request.body)
-    if (!parse.success) {
-      return reply.status(400).send({ error: 'Datos inválidos', detalles: parse.error.flatten() })
-    }
-    try {
-      const resultado = await procesarDocumento(request.tenant.id, parse.data)
-      return reply.status(resultado.aprobado ? 201 : 422).send({ ok: resultado.aprobado, data: resultado })
-    } catch (err) {
-      request.log.error(err)
-      return reply.status(500).send({ error: 'Error procesando documento', mensaje: err.message })
     }
   })
 
@@ -190,7 +190,10 @@ export async function documentosRoutes(fastify) {
     const { cdc } = request.params
     const formato = request.query.formato || 'a4'
 
-    const [doc] = await sql`SELECT * FROM documentos WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}`
+    const [doc] = await sql`
+      SELECT * FROM documentos
+      WHERE cdc = ${cdc} AND tenant_id = ${request.tenant.id}
+    `
     if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
 
     const [tenant] = await sql`
@@ -199,7 +202,7 @@ export async function documentosRoutes(fastify) {
       FROM tenants WHERE id = ${request.tenant.id}
     `
 
-    // Datos del timbrado para mostrar en el KUDE
+    // Datos del timbrado
     if (doc.timbradoId) {
       const [timbrado] = await sql`
         SELECT numero_timbrado, vigencia_desde FROM timbrados WHERE id = ${doc.timbradoId}
@@ -210,7 +213,7 @@ export async function documentosRoutes(fastify) {
       }
     }
 
-    // Generar QR desde el link del XML firmado
+    // Generar QR
     let qrBase64 = null
     const xmlParaQR = doc.xmlFirmado || ''
     if (doc.estado === 'aprobado' && xmlParaQR) {
@@ -246,40 +249,15 @@ export async function documentosRoutes(fastify) {
     try {
       const resultado = await cancelarDocumento(request.tenant.id, cdc, motivo)
       if (!resultado.ok) {
-        return reply.status(422).send({ error: resultado.error || 'No se pudo cancelar', mensaje: resultado.mensaje })
+        return reply.status(422).send({
+          error:   resultado.error?.mensaje || 'No se pudo cancelar',
+          detalles: resultado.error?.detalles || null,
+        })
       }
       return { ok: true, data: resultado }
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send({ error: 'Error cancelando documento', mensaje: err.message })
-    }
-  })
-
-  // ─── POST /documentos/inutilizar ──────────────────────────────────────────
-  fastify.post('/inutilizar', async (request, reply) => {
-    const { tipoDocumento, establecimiento, punto, desde, hasta, motivo } = request.body || {}
-    if (!desde || !hasta) {
-      return reply.status(400).send({ error: 'Se requieren los campos desde y hasta' })
-    }
-    if (Number(desde) > Number(hasta)) {
-      return reply.status(400).send({ error: 'El campo desde no puede ser mayor que hasta' })
-    }
-    try {
-      const resultado = await inutilizarDocumentos(request.tenant.id, {
-        tipoDocumento: tipoDocumento || 1,
-        establecimiento,
-        punto,
-        desde: Number(desde),
-        hasta: Number(hasta),
-        motivo: motivo || 'Documentos no utilizados',
-      })
-      if (!resultado.ok) {
-        return reply.status(422).send({ error: resultado.error || 'No se pudo inutilizar' })
-      }
-      return { ok: true, data: resultado }
-    } catch (err) {
-      request.log.error(err)
-      return reply.status(500).send({ error: 'Error inutilizando documentos', mensaje: err.message })
     }
   })
 
