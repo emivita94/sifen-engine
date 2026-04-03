@@ -217,8 +217,8 @@ export async function procesarDocumento(tenantId, payload) {
     // Documento asociado (factura original)
     if (payload.cdcDocumentoAsociado) {
       data.documentoAsociado = {
-        tipoDocumentoAsociado: 1,  // 1 = Electronico
-        cdc: payload.cdcDocumentoAsociado,
+        formato: 1,   // 1=Electronico, 2=Impreso, 3=Constancia Electronica
+        cdc:     payload.cdcDocumentoAsociado,
       }
     }
   }
