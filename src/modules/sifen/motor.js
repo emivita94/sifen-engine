@@ -397,15 +397,20 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     )
 
     console.log('EVENTO CANCELACION RESPONSE:', JSON.stringify(r))
-    console.log('KEYS RESPUESTA:', JSON.stringify(Object.keys(r || {})))
 
     // Parsear respuesta del evento
-    const respEvento  = r?.['ns2:rRetEnvEve'] || r?.['ns2:rResEnvEve'] || r
-    const codigoEvento = respEvento?.['ns2:dCodRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dCodRes']
-    const mensajeEvento= respEvento?.['ns2:dMsgRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dMsgRes']
-    const aprobado     = ['0260', '0422', '0085'].includes(codigoEvento)
+    // Estructura real: ns2:rRetEnviEventoDe > ns2:gResProcEVe > ns2:gResProc
+    const respEvento   = r?.['ns2:rRetEnviEventoDe'] || r
+    const gResProcEVe  = respEvento?.['ns2:gResProcEVe']
+    const gResProc     = gResProcEVe?.['ns2:gResProc']
+    const codigoEvento = gResProc?.['ns2:dCodRes']
+    const mensajeEvento= gResProc?.['ns2:dMsgRes']
+    const estRes       = gResProcEVe?.['ns2:dEstRes']
+    // 0085 = Aprobado evento, 4003 = ya cancelado (igual lo consideramos ok)
+    const aprobado     = estRes === 'Aprobado' || ['0085', '0260', '0422'].includes(codigoEvento)
+                      || codigoEvento === '4003'  // ya cancelado = ya estaba cancelado, aceptar
 
-    console.log(`Evento cancelacion: codigo=${codigoEvento} mensaje=${mensajeEvento}`)
+    console.log(`Evento cancelacion: estado=${estRes} codigo=${codigoEvento} mensaje=${mensajeEvento}`)
 
     if (!aprobado) {
       return respuestaError(`La SET no aprobo la cancelacion: ${mensajeEvento} (${codigoEvento})`)
@@ -527,12 +532,15 @@ export async function inutilizarDocumentos(tenantId, { tipoDocumento, establecim
 
     console.log('EVENTO INUTILIZACION RESPONSE:', JSON.stringify(r))
 
-    const respEvento   = r?.['ns2:rRetEnvEve'] || r?.['ns2:rResEnvEve'] || r
-    const codigoEvento = respEvento?.['ns2:dCodRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dCodRes']
-    const mensajeEvento= respEvento?.['ns2:dMsgRes'] || respEvento?.['ns2:gResProcEve']?.['ns2:dMsgRes']
-    const aprobado     = ['0260', '0422', '0085'].includes(codigoEvento)
+    const respEvento2   = r?.['ns2:rRetEnviEventoDe'] || r
+    const gResProcEVe2  = respEvento2?.['ns2:gResProcEVe']
+    const gResProc2     = gResProcEVe2?.['ns2:gResProc']
+    const codigoEvento  = gResProc2?.['ns2:dCodRes']
+    const mensajeEvento = gResProc2?.['ns2:dMsgRes']
+    const estRes2       = gResProcEVe2?.['ns2:dEstRes']
+    const aprobado      = estRes2 === 'Aprobado' || ['0085', '0260', '0422'].includes(codigoEvento)
 
-    console.log(`Evento inutilizacion: codigo=${codigoEvento} mensaje=${mensajeEvento}`)
+    console.log(`Evento inutilizacion: estado=${estRes2} codigo=${codigoEvento} mensaje=${mensajeEvento}`)
 
     if (!aprobado) {
       return respuestaError(`La SET no aprobo la inutilizacion: ${mensajeEvento} (${codigoEvento})`)
