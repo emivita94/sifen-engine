@@ -380,7 +380,7 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
 
     // Firmar el evento
-    xmlEventoFirmado = await _xmlsign.signXML(xmlEvento, tmpCert, certPassword, true)
+    xmlEventoFirmado = await _xmlsign.signXMLEvento(xmlEvento, tmpCert, certPassword)
 
     if (!xmlEventoFirmado?.includes('</Signature>')) {
       throw new Error('La firma del evento no se generó correctamente')
@@ -510,7 +510,7 @@ export async function inutilizarDocumentos(tenantId, { tipoDocumento, establecim
     console.log('XML Evento inutilizacion generado, length:', xmlEvento?.length)
     if (!xmlEvento) throw new Error('No se pudo generar el XML del evento de inutilizacion')
 
-    xmlEventoFirmado = await _xmlsign.signXML(xmlEvento, tmpCert, certPassword, true)
+    xmlEventoFirmado = await _xmlsign.signXMLEvento(xmlEvento, tmpCert, certPassword)
     if (!xmlEventoFirmado?.includes('</Signature>')) {
       throw new Error('La firma del evento no se genero correctamente')
     }
