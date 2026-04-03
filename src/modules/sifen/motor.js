@@ -426,6 +426,7 @@ if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
     try { unlinkSync(tmpCert) } catch (e) {}
   }
 
+  console.log('DOC ID para cancelar:', doc?.id, 'estado:', doc?.estado)
   // ── 4. Actualizar estado en BD ──────────────────────────────────────────────
   const [docCancelado] = await sql`
     UPDATE documentos
