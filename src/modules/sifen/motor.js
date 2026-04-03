@@ -374,11 +374,8 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     writeFileSync(tmpCert, certBuffer)
 
     // Generar XML del evento — firma: (id, params, data, config)
-  xmlEvento = await _xmlgen.generateXMLEventoCancelacion(1, params, dataEvento, { version: 150 })
-console.log('XML EVENTO CANCELACION:', xmlEvento)  // ← acá
-console.log('XML Evento cancelacion generado, length:', xmlEvento?.length)
-
-if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
+    xmlEvento = await _xmlgen.generateXMLEventoCancelacion(1, params, dataEvento, { version: 150 })
+    console.log('XML Evento cancelacion generado, length:', xmlEvento?.length)
 
     if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
 
@@ -398,7 +395,7 @@ if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
       certPassword,
       { timeout: config.sifen.timeoutMs }
     )
-    
+
     console.log('EVENTO CANCELACION RESPONSE:', JSON.stringify(r))
 
     // Parsear respuesta del evento
@@ -426,7 +423,6 @@ if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
     try { unlinkSync(tmpCert) } catch (e) {}
   }
 
-  console.log('DOC ID para cancelar:', doc?.id, 'estado:', doc?.estado)
   // ── 4. Actualizar estado en BD ──────────────────────────────────────────────
   const [docCancelado] = await sql`
     UPDATE documentos
@@ -496,9 +492,10 @@ export async function inutilizarDocumentos(tenantId, { tipoDocumento, establecim
     }],
   }
 
-  // Estructura según README: { tipoDocumento, establecimiento, punto, desde, hasta, motivo }
+  // Estructura según README de la librería para inutilizacion
   const dataEvento = {
-    tipoDocumento: tipoDocumento || 1,
+    timbrado:        timbrado.numeroTimbrado,
+    tipoDocumento:   tipoDocumento || 1,
     establecimiento: estCodigo,
     punto:           puntoCodigo,
     desde:           Number(desde),
