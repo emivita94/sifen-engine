@@ -374,8 +374,11 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     writeFileSync(tmpCert, certBuffer)
 
     // Generar XML del evento — firma: (id, params, data, config)
-    xmlEvento = await _xmlgen.generateXMLEventoCancelacion(1, params, dataEvento, { version: 150 })
-    console.log('XML Evento cancelacion generado, length:', xmlEvento?.length)
+  xmlEvento = await _xmlgen.generateXMLEventoCancelacion(1, params, dataEvento, { version: 150 })
+console.log('XML EVENTO CANCELACION:', xmlEvento)  // ← acá
+console.log('XML Evento cancelacion generado, length:', xmlEvento?.length)
+
+if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
 
     if (!xmlEvento) throw new Error('No se pudo generar el XML del evento')
 
@@ -395,7 +398,7 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
       certPassword,
       { timeout: config.sifen.timeoutMs }
     )
-
+    
     console.log('EVENTO CANCELACION RESPONSE:', JSON.stringify(r))
 
     // Parsear respuesta del evento
