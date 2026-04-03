@@ -666,31 +666,47 @@ async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = 
   }
 }
 
-// ── Consultar resultado del lote ──────────────────────────────────────────────
-async function consultarLote(numeroLote, env, certPath, certPassword) {
-  try {
-    const r = await _setapi.consultaLote(
-      1, numeroLote, env, certPath, certPassword,
-      { timeout: 30000 }
-    )
+// ── Consultar resultado del lote con reintentos ───────────────────────────────
+async function consultarLote(numeroLote, env, certPath, certPassword, maxIntentos = 5) {
+  // 0361 = en procesamiento, reintentamos hasta maxIntentos veces cada 5s
+  for (let intento = 1; intento <= maxIntentos; intento++) {
+    try {
+      const r = await _setapi.consultaLote(
+        1, numeroLote, env, certPath, certPassword,
+        { timeout: 30000 }
+      )
 
-    console.log('CONSULTA LOTE:', JSON.stringify(r))
+      console.log(`CONSULTA LOTE (intento ${intento}):`, JSON.stringify(r))
 
-    const respLote   = r?.['ns2:rResEnviConsLoteDe'] || r
-    const gResProc   = respLote?.['ns2:gResProcLote']?.['ns2:gResProc']
-    const primerResp = Array.isArray(gResProc) ? gResProc[0] : gResProc
+      const respLote   = r?.['ns2:rResEnviConsLoteDe'] || r
+      const codigoLot  = respLote?.['ns2:dCodResLot']
+      const mensajeLot = respLote?.['ns2:dMsgResLot']
+      const gResProc   = respLote?.['ns2:gResProcLote']?.['ns2:gResProc']
+      const primerResp = Array.isArray(gResProc) ? gResProc[0] : gResProc
 
-    const codigo   = primerResp?.['ns2:dCodRes'] || respLote?.['ns2:dCodResLot']
-    const mensaje  = primerResp?.['ns2:dMsgRes'] || respLote?.['ns2:dMsgResLot']
-    const estRes   = respLote?.['ns2:gResProcLote']?.['ns2:dEstRes']
-    const aprobado = estRes === 'Aprobado' || ['0260', '0422'].includes(codigo)
+      const codigo   = primerResp?.['ns2:dCodRes'] || codigoLot
+      const mensaje  = primerResp?.['ns2:dMsgRes'] || mensajeLot
+      const estRes   = respLote?.['ns2:gResProcLote']?.['ns2:dEstRes']
+      const aprobado = estRes === 'Aprobado' || ['0260', '0422'].includes(codigo)
 
-    return { aprobado, codigo, mensaje }
+      // 0361 = todavía procesando — reintentamos
+      if (codigoLot === '0361' && intento < maxIntentos) {
+        console.log(`Lote ${numeroLote} aun en procesamiento — reintentando en 5s... (${intento}/${maxIntentos})`)
+        await esperar(5000)
+        continue
+      }
 
-  } catch (err) {
-    console.error('Error consultando lote:', err.message)
-    return { aprobado: false, codigo: 'ERR_CONSULTA', mensaje: `Error: ${err.message}` }
+      return { aprobado, codigo, mensaje }
+
+    } catch (err) {
+      console.error(`Error consultando lote (intento ${intento}):`, err.message)
+      if (intento === maxIntentos) {
+        return { aprobado: false, codigo: 'ERR_CONSULTA', mensaje: `Error: ${err.message}` }
+      }
+      await esperar(3000)
+    }
   }
+  return { aprobado: false, codigo: 'TIMEOUT', mensaje: 'La SET no respondio a tiempo' }
 }
 // ── Cálculos ──────────────────────────────────────────────────────────────────
 const sum = (items, fn) => items.reduce((s, i) => s + (fn(i) || 0), 0)
