@@ -397,6 +397,7 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     )
 
     console.log('EVENTO CANCELACION RESPONSE:', JSON.stringify(r))
+    console.log('KEYS RESPUESTA:', JSON.stringify(Object.keys(r || {})))
 
     // Parsear respuesta del evento
     const respEvento  = r?.['ns2:rRetEnvEve'] || r?.['ns2:rResEnvEve'] || r
