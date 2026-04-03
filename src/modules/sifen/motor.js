@@ -407,7 +407,7 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     const mensajeEvento= gResProc?.['ns2:dMsgRes']
     const estRes       = gResProcEVe?.['ns2:dEstRes']
     // 0085 = Aprobado evento, 4003 = ya cancelado (igual lo consideramos ok)
-    const aprobado     = estRes === 'Aprobado' || ['0085', '0260', '0422'].includes(codigoEvento)
+    const aprobado     = estRes === 'Aprobado' || ['0085', '0260', '0422', '0600'].includes(codigoEvento)
                       || codigoEvento === '4003'  // ya cancelado = ya estaba cancelado, aceptar
 
     console.log(`Evento cancelacion: estado=${estRes} codigo=${codigoEvento} mensaje=${mensajeEvento}`)
