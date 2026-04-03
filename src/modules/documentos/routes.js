@@ -1,5 +1,5 @@
 // src/modules/documentos/routes.js
-import { procesarDocumento, cancelarDocumento, inutilizarDocumentos } from '../sifen/motor.js'
+import { procesarDocumento, cancelarDocumento, inutilizarDocumentos, procesarDocumentoERP } from '../sifen/motor.js'
 import { getDb } from '../../db/connection.js'
 import { generarKude } from '../sifen/kude.js'
 import { hashApiKey } from '../../shared/crypto/index.js'
@@ -104,6 +104,22 @@ export async function documentosRoutes(fastify) {
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send({ error: 'Error procesando documento', mensaje: err.message })
+    }
+  })
+
+  // ─── POST /documentos/erp ────────────────────────────────────────────────
+  // Endpoint para integración directa con ERP — acepta el formato nativo del ERP
+  fastify.post('/erp', async (request, reply) => {
+    const body = request.body
+    if (!body || !body.tipoDocumento || !body.items || !body.cliente) {
+      return reply.status(400).send({ error: 'Faltan campos requeridos: tipoDocumento, items, cliente' })
+    }
+    try {
+      const resultado = await procesarDocumentoERP(request.tenant.id, body)
+      return reply.status(resultado.ok ? 201 : 422).send({ ok: resultado.ok, data: resultado })
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error procesando documento ERP', mensaje: err.message })
     }
   })
 

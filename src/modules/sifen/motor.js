@@ -603,6 +603,283 @@ export async function inutilizarDocumentos(tenantId, { tipoDocumento, establecim
   }
 }
 
+
+// ── Procesar documento desde ERP (formato nativo del ERP) ─────────────────────
+// Acepta el JSON tal como lo genera el ERP sin necesidad de transformación
+export async function procesarDocumentoERP(tenantId, erpPayload) {
+  await cargarLibrerias()
+  const sql = getDb()
+
+  // ── 1. Tenant ───────────────────────────────────────────────────────────────
+  const [tenant] = await sql`
+    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias,
+           codigo_seguridad, cert_password,
+           direccion, numero_casa, departamento, departamento_desc,
+           distrito, distrito_desc, ciudad, ciudad_desc,
+           telefono, email, denominacion, csc, id_csc,
+           actividades_economicas, tipo_contribuyente, tipo_regimen,
+           nombre_fantasia
+    FROM tenants WHERE id = ${tenantId} AND activo = true
+  `
+  if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
+  if (!tenant.certificadoEnc) return respuestaError('El tenant no tiene certificado digital cargado')
+  if (!tenant.csc)            return respuestaError('El tenant no tiene CSC configurado')
+
+  // ── 2. Timbrado activo ──────────────────────────────────────────────────────
+  const tipoDoc = Number(erpPayload.tipoDocumento) || 1
+  const [timbrado] = await sql`
+    SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
+           e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
+           p.codigo AS punto_codigo
+    FROM timbrados t
+    JOIN establecimientos e ON e.id = t.establecimiento_id
+    JOIN puntos_expedicion p ON p.id = t.punto_id
+    WHERE t.tenant_id = ${tenantId}
+      AND t.tipo_documento = ${tipoDoc}
+      AND t.activo = true
+      AND t.vigencia_desde <= CURRENT_DATE
+      AND t.vigencia_hasta >= CURRENT_DATE
+      AND t.numero_actual <= t.numero_max
+    ORDER BY t.vigencia_hasta DESC LIMIT 1
+  `
+  if (!timbrado) return respuestaError(`Sin timbrado activo para tipo de documento ${tipoDoc}`)
+
+  // ── 3. Número secuencial atómico ────────────────────────────────────────────
+  const [{ numeroActual }] = await sql`
+    UPDATE timbrados SET numero_actual = numero_actual + 1
+    WHERE id = ${timbrado.id}
+    RETURNING numero_actual - 1 AS numero_actual
+  `
+  const numeroSecuencia  = Number(numeroActual)
+  const estCodigo        = timbrado.estCodigo.toString().padStart(3, '0')
+  const puntoCodigo      = timbrado.puntoCodigo.toString().padStart(3, '0')
+  const numeroFormateado = `${estCodigo}-${puntoCodigo}-${numeroSecuencia.toString().padStart(7, '0')}`
+  const fechaEmision     = erpPayload.fecha ? new Date(erpPayload.fecha) : ahoraParaguay()
+  const codigoSeguridad  = Math.floor(100000000 + Math.random() * 900000000).toString()
+  const idCSC            = tenant.idCsc || '0001'
+
+  const timbradoFecha = timbrado.vigenciaDesde instanceof Date
+    ? timbrado.vigenciaDesde.toISOString().split('T')[0]
+    : String(timbrado.vigenciaDesde).split('T')[0]
+
+  const actividadesEconomicas = Array.isArray(tenant.actividadesEconomicas) && tenant.actividadesEconomicas.length > 0
+    ? tenant.actividadesEconomicas
+    : [{ codigo: '00000', descripcion: 'SIN ACTIVIDAD CONFIGURADA' }]
+
+  // ── 4. Params (datos del emisor) ────────────────────────────────────────────
+  const params = {
+    version:               150,
+    ruc:                   tenant.ruc,
+    razonSocial:           tenant.razonSocial,
+    nombreFantasia:        tenant.nombreFantasia || tenant.razonSocial,
+    actividadesEconomicas,
+    timbradoNumero:        timbrado.numeroTimbrado,
+    timbradoFecha,
+    tipoContribuyente:     tenant.tipoContribuyente || 2,
+    tipoRegimen:           tenant.tipoRegimen       || 8,
+    establecimientos: [{
+      codigo:                  estCodigo,
+      direccion:               tenant.direccion        || '',
+      numeroCasa:              tenant.numeroCasa       || '0',
+      departamento:            tenant.departamento     || 1,
+      departamentoDescripcion: tenant.departamentoDesc || 'CAPITAL',
+      distrito:                tenant.distrito         || 1,
+      distritoDescripcion:     tenant.distritoDesc     || 'ASUNCION (DISTRITO)',
+      ciudad:                  tenant.ciudad           || 1,
+      ciudadDescripcion:       tenant.ciudadDesc       || 'ASUNCION (DISTRITO)',
+      telefono:                tenant.telefono         || '',
+      email:                   tenant.email            || '',
+      denominacion:            tenant.denominacion     || '',
+    }],
+  }
+
+  // ── 5. Data — usar el cliente del ERP directamente ──────────────────────────
+  // El ERP ya manda el cliente en el formato exacto que necesita la librería
+  const clienteERP = erpPayload.cliente || {}
+
+  // Normalizar RUC si viene con guion
+  if (clienteERP.contribuyente && clienteERP.ruc && clienteERP.ruc.includes('-')) {
+    const [rucParte, dvParte] = clienteERP.ruc.split('-')
+    clienteERP.ruc = rucParte
+    clienteERP.dv  = dvParte
+  }
+  // Asegurar campos requeridos
+  if (!clienteERP.paisDescripcion) clienteERP.paisDescripcion = 'Paraguay'
+  if (!clienteERP.pais)            clienteERP.pais            = 'PRY'
+
+  // Calcular montos desde items del ERP
+  const itemsERP = erpPayload.items || []
+  const montoTotal  = itemsERP.reduce((s, i) => s + Number(i.precioUnitario) * Number(i.cantidad), 0)
+  const montoIva10  = itemsERP.filter(i => Number(i.iva) === 10).reduce((s, i) => s + Math.round(Number(i.precioUnitario) * Number(i.cantidad) * 10 / 110), 0)
+  const montoIva5   = itemsERP.filter(i => Number(i.iva) === 5).reduce((s,  i) => s + Math.round(Number(i.precioUnitario) * Number(i.cantidad) * 5  / 105), 0)
+  const montoExento = itemsERP.filter(i => Number(i.iva) === 0).reduce((s,  i) => s + Number(i.precioUnitario) * Number(i.cantidad), 0)
+
+  // Items — el ERP ya los manda casi en el formato correcto
+  const items = itemsERP.map((item, idx) => ({
+    codigo:               item.codigo || String(idx + 1).padStart(3, '0'),
+    descripcion:          item.descripcion,
+    observacion:          item.observacion || '',
+    unidadMedida:         item.unidadMedida || 77,
+    cantidad:             Number(item.cantidad),
+    precioUnitario:       Number(item.precioUnitario),
+    cambio:               0,
+    descuento:            0,
+    anticipo:             0,
+    porcDescuento:        0,
+    descuentoGlobalItem:  0,
+    anticipoGlobalItem:   0,
+    ivaTipo:              item.ivaTipo  || 1,
+    ivaBase:              item.ivaBase  || 100,
+    iva:                  Number(item.iva),
+    lote: '', vencimiento: '', numeroSerie: '',
+    numeroPedido: '', numeroSeguimiento: '',
+    importacion: {}, dncp: {},
+    pais: 'PRY', paisDescripcion: 'Paraguay',
+    tolerancia: 0, toleranciaCantidad: 0, toleranciaPorcentaje: 0, cdcAnticipo: '',
+  }))
+
+  // Condicion — usar la del ERP si viene, sino contado por defecto
+  const condicion = erpPayload.condicion || {
+    tipo: 1,
+    entregas: [{ tipo: 1, monto: String(montoTotal), moneda: erpPayload.moneda || 'PYG', cambio: 0 }],
+  }
+
+  const data = {
+    tipoDocumento:            tipoDoc,
+    establecimiento:          estCodigo,
+    punto:                    puntoCodigo,
+    numero:                   numeroSecuencia.toString().padStart(7, '0'),
+    codigoSeguridadAleatorio: codigoSeguridad,
+    descripcion:              erpPayload.descripcion || '',
+    observacion:              erpPayload.observacion || '',
+    fecha:                    fechaEmision.toISOString().substring(0, 19),
+    tipoEmision:              1,
+    tipoTransaccion:          Number(erpPayload.tipoTransaccion) || 1,
+    tipoImpuesto:             Number(erpPayload.tipoImpuesto)    || 1,
+    moneda:                   erpPayload.moneda || 'PYG',
+    descuentoGlobal:          0,
+    anticipoGlobal:           0,
+    cambio:                   0,
+    cliente:                  clienteERP,
+    condicion,
+    items,
+  }
+
+  // Campos especificos segun tipo
+  if (tipoDoc === 1 || tipoDoc === 2 || tipoDoc === 3 || tipoDoc === 4) {
+    data.factura = erpPayload.factura || { presencia: 1 }
+  }
+  if (tipoDoc === 5 || tipoDoc === 6) {
+    data.notaCreditoDebito = {
+      motivo: Number(erpPayload.notaCreditoDebito?.motivo) || 1,
+    }
+    if (erpPayload.documentoAsociado) {
+      data.documentoAsociado = {
+        formato:        Number(erpPayload.documentoAsociado.formato) || 1,
+        cdc:            erpPayload.documentoAsociado.cdc,
+        timbrado:       erpPayload.documentoAsociado.timbrado,
+        establecimiento: erpPayload.documentoAsociado.establecimiento,
+        punto:          erpPayload.documentoAsociado.punto,
+        numero:         erpPayload.documentoAsociado.numero,
+        fecha:          erpPayload.documentoAsociado.fecha,
+      }
+    }
+  }
+  if (tipoDoc === 7) {
+    data.remision = erpPayload.remision || { motivo: 1, tipoResponsable: 1 }
+  }
+
+  // ── 6. Generar XML ──────────────────────────────────────────────────────────
+  let xmlGenerado
+  try {
+    xmlGenerado = await _xmlgen.generateXMLDE(params, data, { version: 150 })
+  } catch (err) {
+    return respuestaError('Error generando XML del DE', err.message)
+  }
+
+  const cdcMatch = xmlGenerado?.match(/Id="([^"]{44})"/)
+  const cdc = cdcMatch ? cdcMatch[1] : null
+  if (!cdc) return respuestaError('No se pudo extraer el CDC del XML generado')
+
+  // ── 7. Firmar + QR + Enviar ─────────────────────────────────────────────────
+  let xmlFirmado, sifen
+  const tmpCert = join('/tmp', `cert_${tenantId}_${Date.now()}.p12`)
+
+  try {
+    const certBuffer   = desencriptar(tenant.certificadoEnc)
+    const certPassword = tenant.certPassword || ''
+    writeFileSync(tmpCert, certBuffer)
+
+    xmlGenerado = xmlGenerado.replace(
+      /<dFecFirma>[^<]+<\/dFecFirma>/,
+      `<dFecFirma>${ahoraParaguay().toISOString().substring(0, 19)}</dFecFirma>`
+    )
+
+    xmlFirmado = await _xmlsign.signXML(xmlGenerado, tmpCert, certPassword, true)
+    if (!xmlFirmado?.includes('</Signature>')) {
+      throw new Error('La firma digital no se genero correctamente')
+    }
+
+    const env = tenant.ambiente === 'prod' ? 'prod' : 'test'
+    xmlFirmado = await _qrgen.generateQR(xmlFirmado, idCSC, tenant.csc, env)
+    sifen = await enviarASIFEN(xmlFirmado, tenant.ambiente, tmpCert, certPassword, cdc)
+
+  } catch (err) {
+    return respuestaError('Error firmando o enviando el DE', err.message)
+  } finally {
+    try { unlinkSync(tmpCert) } catch (e) {}
+  }
+
+  const estadoFinal = sifen.aprobado ? 'aprobado' : (sifen.pendiente ? 'pendiente' : 'rechazado')
+
+  // ── 8. Persistir ────────────────────────────────────────────────────────────
+  const receptor = erpPayload.cliente || {}
+  const [doc] = await sql`
+    INSERT INTO documentos (
+      tenant_id, timbrado_id, cdc, tipo_documento, numero, numero_secuencia,
+      estado, payload_json, xml_generado, xml_firmado,
+      receptor_tipo, receptor_doc, receptor_razon,
+      monto_total, monto_iva_10, monto_iva_5, monto_exento,
+      referencia_ext, webhook_url
+    ) VALUES (
+      ${tenantId}, ${timbrado.id}, ${cdc}, ${tipoDoc}, ${numeroFormateado}, ${numeroSecuencia},
+      ${estadoFinal}, ${JSON.stringify(erpPayload)}, ${xmlGenerado}, ${xmlFirmado},
+      ${1},
+      ${receptor.ruc || receptor.documentoNumero || null},
+      ${receptor.razonSocial || null},
+      ${montoTotal}, ${montoIva10}, ${montoIva5}, ${montoExento},
+      ${erpPayload.referenciaExterna || null},
+      ${erpPayload.webhookUrl        || null}
+    ) RETURNING *
+  `
+
+  const [docFinal] = await sql`
+    UPDATE documentos SET
+      xml_aprobado  = ${sifen.xmlRespuesta || null},
+      sifen_codigo  = ${sifen.codigo       || null},
+      sifen_mensaje = ${sifen.mensaje      || null},
+      sifen_env_en  = ${sifen.enviadoEn},
+      sifen_resp_en = ${sifen.respondidoEn}
+    WHERE id = ${doc.id} RETURNING *
+  `
+
+  await sql`
+    INSERT INTO sifen_logs (
+      documento_id, tenant_id, accion,
+      request_xml, response_xml,
+      codigo_resp, mensaje_resp, duracion_ms, exitoso
+    ) VALUES (
+      ${doc.id}, ${tenantId}, 'envio',
+      ${xmlFirmado}, ${sifen.xmlRespuesta || null},
+      ${sifen.codigo || null}, ${sifen.mensaje || null},
+      ${sifen.duracionMs || 0}, ${sifen.aprobado}
+    )
+  `
+
+  dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado').catch(() => {})
+  return respuestaDE(docFinal)
+}
+
 // ── Enviar a SIFEN por lote asíncrono ─────────────────────────────────────────
 async function enviarASIFEN(xmlFirmado, ambiente, certPath, certPassword, cdc = '') {
   const inicio    = Date.now()
