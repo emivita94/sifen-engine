@@ -192,7 +192,6 @@ export async function procesarDocumento(tenantId, payload) {
     anticipoGlobal:           0,
     cambio:                   0,
     cliente:                  clienteData,
-    factura:                  { presencia: 1 },
     condicion: {
       tipo: 1,
       entregas: [{
@@ -201,6 +200,35 @@ export async function procesarDocumento(tenantId, payload) {
       }],
     },
     items,
+  }
+
+  // Campos especificos segun tipo de documento
+  if (tipoDoc === 1 || tipoDoc === 2 || tipoDoc === 3 || tipoDoc === 4) {
+    // Factura electronica
+    data.factura = { presencia: 1 }
+  }
+
+  if (tipoDoc === 5 || tipoDoc === 6) {
+    // Nota de Credito / Nota de Debito
+    // motivo: 1=Devolucion, 2=Cancelacion, 3=Descuento, 4=Bonificacion, 5=Credito incobrable, 6=Recupero, 7=Otro
+    data.notaCreditoDebito = {
+      motivo: payload.motivo || 1,
+    }
+    // Documento asociado (factura original)
+    if (payload.cdcDocumentoAsociado) {
+      data.documentoAsociado = {
+        tipoDocumentoAsociado: 1,  // 1 = Electronico
+        cdc: payload.cdcDocumentoAsociado,
+      }
+    }
+  }
+
+  if (tipoDoc === 7) {
+    // Nota de remision
+    data.remision = {
+      motivo:           payload.motivoRemision || 1,
+      tipoResponsable:  payload.tipoResponsable || 1,
+    }
   }
 
   // ── 6. Generar XML ──────────────────────────────────────────────────────────

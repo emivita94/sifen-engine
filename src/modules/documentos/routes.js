@@ -22,14 +22,20 @@ const receptorSchema = z.object({
 })
 
 const emitirSchema = z.object({
-  tipoDocumento:     z.number().int().default(1),
-  tipoTransaccion:   z.number().int().default(1),
-  fecha:             z.string().optional(),
-  moneda:            z.string().default('PYG'),
-  receptor:          receptorSchema,
-  items:             z.array(itemSchema).min(1),
-  referenciaExterna: z.string().max(100).optional(),
-  webhookUrl:        z.string().url().optional(),
+  tipoDocumento:         z.number().int().default(1),
+  tipoTransaccion:       z.number().int().default(1),
+  fecha:                 z.string().optional(),
+  moneda:                z.string().default('PYG'),
+  receptor:              receptorSchema,
+  items:                 z.array(itemSchema).min(1),
+  referenciaExterna:     z.string().max(100).optional(),
+  webhookUrl:            z.string().url().optional(),
+  // Nota de Credito / Debito (tipo 5 o 6)
+  motivo:                z.number().int().optional(),          // 1=Devolucion, 2=Cancelacion...
+  cdcDocumentoAsociado:  z.string().length(44).optional(),    // CDC de la factura original
+  // Nota de Remision (tipo 7)
+  motivoRemision:        z.number().int().optional(),
+  tipoResponsable:       z.number().int().optional(),
 }).passthrough()
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
