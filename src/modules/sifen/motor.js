@@ -3,6 +3,7 @@ import { getDb } from '../../db/connection.js'
 import { desencriptar } from '../../shared/crypto/index.js'
 import { config } from '../../config/index.js'
 import { dispararWebhook } from './webhooks.js'
+import { enviarEmailDocumento } from './email.js'
 import { respuestaDE, respuestaError } from './respuestas.js'
 import { writeFileSync, unlinkSync, mkdirSync } from 'fs'
 import { join } from 'path'
@@ -47,7 +48,9 @@ export async function procesarDocumento(tenantId, payload) {
            distrito, distrito_desc, ciudad, ciudad_desc,
            telefono, email, denominacion, csc, id_csc,
            actividades_economicas, tipo_contribuyente, tipo_regimen,
-           nombre_fantasia
+           nombre_fantasia,
+           smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
+           smtp_from, smtp_from_name
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
@@ -326,6 +329,7 @@ export async function procesarDocumento(tenantId, payload) {
   `
 
   dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado').catch(() => {})
+  if (sifen.aprobado) enviarEmailDocumento(docFinal, tenant).catch(() => {})
   return respuestaDE(docFinal)
 }
 
@@ -618,7 +622,9 @@ export async function procesarDocumentoERP(tenantId, erpPayload) {
            distrito, distrito_desc, ciudad, ciudad_desc,
            telefono, email, denominacion, csc, id_csc,
            actividades_economicas, tipo_contribuyente, tipo_regimen,
-           nombre_fantasia
+           nombre_fantasia,
+           smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
+           smtp_from, smtp_from_name
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
@@ -877,6 +883,7 @@ export async function procesarDocumentoERP(tenantId, erpPayload) {
   `
 
   dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado').catch(() => {})
+  if (sifen.aprobado) enviarEmailDocumento(docFinal, tenant).catch(() => {})
   return respuestaDE(docFinal)
 }
 

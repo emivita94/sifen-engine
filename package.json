@@ -19,6 +19,7 @@
     "facturacionelectronicapy-xmlgen": "^1.0.275",
     "facturacionelectronicapy-xmlsign": "^1.0.18",
     "fastify": "^4.26.0",
+    "nodemailer": "^8.0.4",
     "pdf-lib": "^1.17.1",
     "pino": "^8.18.0",
     "pino-pretty": "^11.0.0",

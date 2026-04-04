@@ -266,4 +266,61 @@ export async function tenantsRoutes(fastify) {
       }
     })
   })
+
+  // ─── POST /tenants/:id/test-email - Enviar email de prueba ─────────────────
+  fastify.post('/:id/test-email', async (request, reply) => {
+    const sql = getDb()
+    const tenantId = request.params.id
+    const { destinatario } = request.body || {}
+
+    if (!destinatario) {
+      return reply.status(400).send({ error: 'Faltá el campo destinatario' })
+    }
+
+    const [tenant] = await sql`
+      SELECT id, ruc, razon_social, nombre_fantasia, email,
+             smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
+             smtp_from, smtp_from_name
+      FROM tenants WHERE id = ${tenantId} AND activo = true
+    `
+    if (!tenant) return reply.status(404).send({ error: 'Tenant no encontrado' })
+    if (!tenant.smtpHost) return reply.status(400).send({ error: 'SMTP no configurado para este tenant' })
+
+    try {
+      const nodemailer = (await import('nodemailer')).default
+      const transporte = nodemailer.createTransport({
+        host:   tenant.smtpHost,
+        port:   tenant.smtpPort  || 587,
+        secure: tenant.smtpSsl === true,
+        auth:   { user: tenant.smtpUser, pass: tenant.smtpPass },
+        tls:    { rejectUnauthorized: false },
+      })
+
+      await transporte.verify()
+
+      const emisorNom = tenant.nombreFantasia || tenant.razonSocial || ''
+      const from = tenant.smtpFromName
+        ? `"${tenant.smtpFromName}" <${tenant.smtpFrom}>`
+        : tenant.smtpFrom
+
+      await transporte.sendMail({
+        from,
+        to:      destinatario,
+        subject: `✅ Prueba de correo — ${emisorNom}`,
+        html: `
+          <div style="font-family:sans-serif;max-width:500px;margin:0 auto;padding:32px">
+            <h2 style="color:#FF8C00">NODO Engine — Email de prueba</h2>
+            <p>La configuración SMTP de <strong>${emisorNom}</strong> está funcionando correctamente.</p>
+            <p>Los documentos electrónicos aprobados por la SET serán enviados desde esta cuenta a los receptores automáticamente.</p>
+            <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+            <p style="font-size:12px;color:#9ca3af">NODO Engine — Facturación Electrónica Paraguay</p>
+          </div>
+        `,
+      })
+
+      return { ok: true, mensaje: `Email de prueba enviado a ${destinatario}` }
+    } catch(err) {
+      return reply.status(500).send({ error: 'Error SMTP: ' + err.message })
+    }
+  })
 }
