@@ -2,6 +2,7 @@
 // Entry point del motor SIFEN
 
 import Fastify from 'fastify'
+import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import { config } from './config/index.js'
 import { authPlugin } from './shared/auth/plugin.js'
@@ -17,6 +18,18 @@ const fastify = Fastify({
       : undefined,
   },
   bodyLimit: 1048576,
+})
+
+// ── CORS ──────────────────────────────────────────────────────────────────────
+await fastify.register(cors, {
+  origin: [
+    'https://nodoengineweb.pages.dev',
+    'http://localhost:3000',
+    'http://127.0.0.1:5500',
+  ],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  credentials: true,
 })
 
 // ── Rate limiting global ──────────────────────────────────────────────────────
