@@ -39,8 +39,8 @@ export async function tenantsRoutes(fastify) {
     // Crear primera API key automáticamente
     const { key, hash, prefix } = generarApiKey(ambiente === 'prod' ? 'live' : 'test')
     await sql`
-      INSERT INTO api_keys (tenant_id, nombre, key_hash, key_prefix)
-      VALUES (${tenant.id}, 'Default', ${hash}, ${prefix})
+      INSERT INTO api_keys (tenant_id, nombre, key_hash, key_prefix, key_plain)
+      VALUES (${tenant.id}, 'Default', ${hash}, ${prefix}, ${key})
     `
 
     return reply.status(201).send({
@@ -251,8 +251,8 @@ export async function tenantsRoutes(fastify) {
     const { key, hash, prefix } = generarApiKey(ambiente)
 
     await sql`
-      INSERT INTO api_keys (tenant_id, nombre, key_hash, key_prefix)
-      VALUES (${request.params.id}, ${nombre}, ${hash}, ${prefix})
+      INSERT INTO api_keys (tenant_id, nombre, key_hash, key_prefix, key_plain)
+      VALUES (${request.params.id}, ${nombre}, ${hash}, ${prefix}, ${key})
     `
 
     return reply.status(201).send({
