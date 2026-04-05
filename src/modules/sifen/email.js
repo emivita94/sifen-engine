@@ -15,35 +15,24 @@ import { getDb } from '../../db/connection.js'
 // ── Configuración SMTP del tenant ─────────────────────────────────────────────
 
 function crearTransporte(tenant) {
-  // Si el tenant tiene SMTP propio configurado, lo usamos
-  if (tenant.smtpHost) {
-    return nodemailer.createTransport({
-      host:   tenant.smtpHost,
-      port:   tenant.smtpPort  || 587,
-      secure: tenant.smtpSsl === true ? true : (tenant.smtpPort === 465),
-      auth: {
-        user: tenant.smtpUser,
-        pass: tenant.smtpPass,
-      },
-      tls: { rejectUnauthorized: false },
-    })
-  }
+  // Aceptar tanto snake_case (desde BD directa) como camelCase (desde motor.js)
+  const host     = tenant.smtpHost     || tenant.smtp_host
+  const port     = tenant.smtpPort     || tenant.smtp_port     || 587
+  const ssl      = tenant.smtpSsl      ?? tenant.smtp_ssl      ?? false
+  const user     = tenant.smtpUser     || tenant.smtp_user
+  const pass     = tenant.smtpPass     || tenant.smtp_pass
+  const fromAddr = tenant.smtpFrom     || tenant.smtp_from     || tenant.email
+  const fromName = tenant.smtpFromName || tenant.smtp_from_name
 
-  // Fallback: SMTP por defecto del sistema (variable de entorno)
-  if (process.env.SMTP_HOST) {
-    return nodemailer.createTransport({
-      host:   process.env.SMTP_HOST,
-      port:   parseInt(process.env.SMTP_PORT  || '587'),
-      secure: process.env.SMTP_SSL === 'true',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      tls: { rejectUnauthorized: false },
-    })
-  }
+  if (!host) return null
 
-  return null
+  return nodemailer.createTransport({
+    host,
+    port:   Number(port),
+    secure: ssl === true || ssl === 'true' || Number(port) === 465,
+    auth:   (user && pass) ? { user, pass } : undefined,
+    tls:    { rejectUnauthorized: false },
+  })
 }
 
 // ── Función principal ─────────────────────────────────────────────────────────
@@ -61,7 +50,7 @@ export async function enviarEmailDocumento(doc, tenant) {
 
   // Necesitamos al menos un destinatario
   const emailReceptor = doc.receptorEmail || doc.receptor_email || null
-  const emailEmisor   = tenant.smtpFrom || tenant.email || null
+  const emailEmisor   = tenant.smtpFrom || tenant.smtp_from || tenant.email || null
 
   if (!emailReceptor && !emailEmisor) return
 
@@ -88,21 +77,53 @@ export async function enviarEmailDocumento(doc, tenant) {
     }
 
     const tipoDoc   = tipoLabel[doc.tipo_documento] || 'Documento electrónico'
-    const emisorNom = tenant.nombre_fantasia || tenant.razon_social || tenant.nombreFantasia || ''
+    const emisorNom = tenant.nombre_fantasia || tenant.nombreFantasia || tenant.razon_social || tenant.razonSocial || ''
     const emisorRuc = tenant.ruc || ''
     const numero    = doc.numero || doc.cdc?.slice(0, 15) || '—'
     const monto     = doc.monto_total ? `₲ ${Number(doc.monto_total).toLocaleString('es-PY')}` : ''
+    const fecha     = doc.creado_en ? new Date(doc.creado_en).toLocaleDateString('es-PY') : new Date().toLocaleDateString('es-PY')
+    const recNom    = doc.receptor_razon || doc.receptorRazon || 'Cliente'
+    const recRuc    = doc.receptor_doc   || doc.receptorDoc   || ''
 
-    const asunto = `${tipoDoc} N° ${numero} — ${emisorNom}`
+    // Variables de reemplazo en plantillas
+    const vars = {
+      tipoDocumento:   tipoDoc,
+      numeroFactura:   numero,
+      receptor_nombre: recNom,
+      receptor_ruc:    recRuc,
+      emisor_nombre:   emisorNom,
+      emisor_ruc:      emisorRuc,
+      monto_total:     monto,
+      fecha,
+      cdc:             doc.cdc || '',
+      emisor_telefono: tenant.telefono || '',
+      emisor_email:    tenant.smtpFrom || tenant.smtp_from || tenant.email || '',
+    }
+    const reemplazar = (str) => str.replace(/\$\{(\w+)\}/g, (_, k) => vars[k] ?? `\${${k}}`)
 
+    // Usar plantillas del tenant o valores por defecto
+    const ASUNTO_DEFAULT = '${tipoDocumento} N° ${numeroFactura} — ${emisor_nombre}'
+    const CUERPO_DEFAULT = `Estimado/a \${receptor_nombre},\n\nAdjunto encontrará su \${tipoDocumento} N° \${numeroFactura} emitida por \${emisor_nombre} (RUC: \${emisor_ruc}), aprobada por la SET de Paraguay.\n\nMonto total: \${monto_total}\nFecha de emisión: \${fecha}\nCDC: \${cdc}\n\nEl archivo PDF adjunto es el comprobante oficial (KUDE). Puede verificar su autenticidad en ekuatia.set.gov.py ingresando el CDC.`
+    const FIRMA_DEFAULT  = `Atentamente,\n\${emisor_nombre}`
+
+    const asuntoPlantilla = tenant.email_asunto         || tenant.emailAsunto         || ASUNTO_DEFAULT
+    const cuerpoPlantilla = tenant.email_cuerpo         || tenant.emailCuerpo         || CUERPO_DEFAULT
+    const infoAdicional   = tenant.email_info_adicional || tenant.emailInfoAdicional  || ''
+    const firmaPlantilla  = tenant.email_firma          || tenant.emailFirma          || FIRMA_DEFAULT
+
+    // Construir texto completo con secciones
+    const partesTexto = [reemplazar(cuerpoPlantilla)]
+    if (infoAdicional.trim()) partesTexto.push('\n─────────────────\n' + infoAdicional.trim())
+    partesTexto.push('\n' + reemplazar(firmaPlantilla))
+    const cuerpoTexto = partesTexto.join('\n')
+
+    const asunto = reemplazar(asuntoPlantilla)
+
+    // HTML wrapper para el cuerpo de texto
     const html = plantillaEmail({
-      tipoDoc,
-      numero,
-      emisorNom,
-      emisorRuc,
-      receptorNom: doc.receptor_razon || doc.receptorRazon || 'Cliente',
-      monto,
-      cdc: doc.cdc,
+      tipoDoc, numero, emisorNom, emisorRuc,
+      receptorNom: recNom, monto, cdc: doc.cdc,
+      cuerpoTexto,
     })
 
     const adjunto = {
@@ -111,9 +132,9 @@ export async function enviarEmailDocumento(doc, tenant) {
       contentType: 'application/pdf',
     }
 
-    const from = tenant.smtpFromName
-      ? `"${tenant.smtpFromName}" <${tenant.smtpFrom || tenant.email}>`
-      : (tenant.smtpFrom || tenant.email || process.env.SMTP_FROM || 'noreply@nodoinformatica.com')
+    const fromAddr = tenant.smtpFrom || tenant.smtp_from || tenant.email || ''
+    const fromName = tenant.smtpFromName || tenant.smtp_from_name || emisorNom
+    const from = fromName ? `"${fromName}" <${fromAddr}>` : fromAddr
 
     const destinatarios = []
 
@@ -123,8 +144,9 @@ export async function enviarEmailDocumento(doc, tenant) {
     }
 
     // Copia al emisor
-    if (emailEmisor && emailEmisor !== emailReceptor) {
-      destinatarios.push({ to: emailEmisor, tipo: 'emisor' })
+    const emailEmisorFinal = tenant.smtpFrom || tenant.smtp_from || tenant.email || null
+    if (emailEmisorFinal && emailEmisorFinal !== emailReceptor) {
+      destinatarios.push({ to: emailEmisorFinal, tipo: 'emisor' })
     }
 
     for (const dest of destinatarios) {
@@ -152,7 +174,12 @@ export async function enviarEmailDocumento(doc, tenant) {
 
 // ── Template HTML del email ───────────────────────────────────────────────────
 
-function plantillaEmail({ tipoDoc, numero, emisorNom, emisorRuc, receptorNom, monto, cdc }) {
+function plantillaEmail({ tipoDoc, numero, emisorNom, emisorRuc, receptorNom, monto, cdc, cuerpoTexto }) {
+  // Si hay cuerpo personalizado, usarlo como texto plano dentro del wrapper HTML
+  const cuerpoHtml = cuerpoTexto
+    ? cuerpoTexto.split('\n').map(l => l ? `<p style="margin:0 0 10px">${l}</p>` : '<br>').join('')
+    : `<p style="margin:0 0 10px">Estimado/a <strong>${receptorNom}</strong>,</p>
+       <p style="margin:0 0 10px">Adjunto encontrará su <strong>${tipoDoc}</strong> N° <strong>${numero}</strong> emitida por <strong>${emisorNom}</strong> y aprobada por la Subsecretaría de Estado de Tributación (SET) de Paraguay.</p>`
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -174,10 +201,9 @@ function plantillaEmail({ tipoDoc, numero, emisorNom, emisorRuc, receptorNom, mo
         <!-- Cuerpo -->
         <tr><td style="background:#ffffff;padding:32px">
 
-          <p style="margin:0 0 8px;font-size:15px;color:#374151">Estimado/a <strong>${receptorNom}</strong>,</p>
-          <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.6">
-            Adjunto encontrará su <strong>${tipoDoc}</strong> emitida por <strong>${emisorNom}</strong> y aprobada por la Subsecretaría de Estado de Tributación (SET) de Paraguay.
-          </p>
+          <div style="font-size:14px;color:#374151;line-height:1.7;margin-bottom:24px">
+            ${cuerpoHtml}
+          </div>
 
           <!-- Datos del documento -->
           <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:24px">

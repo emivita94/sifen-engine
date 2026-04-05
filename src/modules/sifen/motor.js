@@ -50,7 +50,8 @@ export async function procesarDocumento(tenantId, payload) {
            actividades_economicas, tipo_contribuyente, tipo_regimen,
            nombre_fantasia,
            smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
-           smtp_from, smtp_from_name
+           smtp_from, smtp_from_name,
+           email_asunto, email_cuerpo, email_info_adicional, email_firma
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
@@ -624,7 +625,8 @@ export async function procesarDocumentoERP(tenantId, erpPayload) {
            actividades_economicas, tipo_contribuyente, tipo_regimen,
            nombre_fantasia,
            smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
-           smtp_from, smtp_from_name
+           smtp_from, smtp_from_name,
+           email_asunto, email_cuerpo, email_info_adicional, email_firma
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
