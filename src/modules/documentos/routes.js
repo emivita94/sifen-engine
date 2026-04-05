@@ -283,4 +283,50 @@ export async function documentosRoutes(fastify) {
     }
   })
 
+  // ─── POST /documentos/:cdc/reenviar-email ────────────────────────────────
+  fastify.post('/:cdc/reenviar-email', async (request, reply) => {
+    const { cdc }         = request.params
+    const emailDestino    = request.body?.emailDestino || null
+    const tenantId        = request.tenant.id
+    const sql             = getDb()
+
+    // Buscar el documento
+    const [doc] = await sql`
+      SELECT d.*, t.email AS tenant_email,
+             t.smtp_host, t.smtp_port, t.smtp_ssl, t.smtp_user, t.smtp_pass,
+             t.smtp_from, t.smtp_from_name, t.nombre_fantasia, t.razon_social, t.ruc
+      FROM documentos d
+      JOIN tenants t ON t.id = d.tenant_id
+      WHERE d.cdc = ${cdc} AND d.tenant_id = ${tenantId}
+    `
+
+    if (!doc) return reply.status(404).send({ error: 'Documento no encontrado' })
+    if (doc.estado !== 'aprobado') return reply.status(400).send({ error: 'Solo se puede reenviar el email de documentos aprobados' })
+
+    try {
+      const { enviarEmailDocumento } = await import('../sifen/email.js')
+
+      // Si se especificó un email destino, usarlo temporalmente
+      const docParaEnvio = emailDestino
+        ? { ...doc, receptor_email: emailDestino }
+        : doc
+
+      const tenant = {
+        id: tenantId, ruc: doc.ruc,
+        razonSocial: doc.razon_social, nombreFantasia: doc.nombre_fantasia,
+        email: doc.tenant_email,
+        smtpHost: doc.smtp_host, smtpPort: doc.smtp_port, smtpSsl: doc.smtp_ssl,
+        smtpUser: doc.smtp_user, smtpPass: doc.smtp_pass,
+        smtpFrom: doc.smtp_from, smtpFromName: doc.smtp_from_name,
+      }
+
+      await enviarEmailDocumento(docParaEnvio, tenant)
+      return { ok: true, mensaje: 'Email enviado correctamente' }
+
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error enviando email: ' + err.message })
+    }
+  })
+
 }
