@@ -312,12 +312,19 @@ export async function documentosRoutes(fastify) {
         : doc
 
       const tenant = {
-        id: tenantId, ruc: doc.ruc,
-        razonSocial: doc.razon_social, nombreFantasia: doc.nombre_fantasia,
-        email: doc.tenant_email,
-        smtpHost: doc.smtp_host, smtpPort: doc.smtp_port, smtpSsl: doc.smtp_ssl,
-        smtpUser: doc.smtp_user, smtpPass: doc.smtp_pass,
-        smtpFrom: doc.smtp_from, smtpFromName: doc.smtp_from_name,
+        id: tenantId,
+        ruc:           doc.ruc,
+        razonSocial:   doc.razonSocial   || doc.razon_social,
+        nombreFantasia: doc.nombreFantasia || doc.nombre_fantasia,
+        email:         doc.tenantEmail   || doc.tenant_email,
+        // postgres-js convierte snake_case → camelCase automáticamente
+        smtpHost:     doc.smtpHost     || doc.smtp_host,
+        smtpPort:     doc.smtpPort     || doc.smtp_port,
+        smtpSsl:      doc.smtpSsl      ?? doc.smtp_ssl,
+        smtpUser:     doc.smtpUser     || doc.smtp_user,
+        smtpPass:     doc.smtpPass     || doc.smtp_pass,
+        smtpFrom:     doc.smtpFrom     || doc.smtp_from,
+        smtpFromName: doc.smtpFromName || doc.smtp_from_name,
       }
 
       await enviarEmailDocumento(docParaEnvio, tenant)
