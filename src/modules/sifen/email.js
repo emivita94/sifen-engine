@@ -32,6 +32,7 @@ function crearTransporte(tenant) {
     secure: ssl === true || ssl === 'true' || Number(port) === 465,
     auth:   (user && pass) ? { user, pass } : undefined,
     tls:    { rejectUnauthorized: false },
+    family: 4, // forzar IPv4 — Railway no soporta IPv6
   })
 }
 
