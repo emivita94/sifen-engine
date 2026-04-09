@@ -109,11 +109,24 @@ export async function documentosRoutes(fastify) {
 
   // ─── POST /documentos/erp ────────────────────────────────────────────────
   // Endpoint para integración directa con ERP — acepta el formato nativo del ERP
+  // Si body.dryRun === true, solo valida sin emitir (mismo resultado que /validar)
   fastify.post('/erp', async (request, reply) => {
     const body = request.body
     if (!body || !body.tipoDocumento || !body.items || !body.cliente) {
       return reply.status(400).send({ error: 'Faltan campos requeridos: tipoDocumento, items, cliente' })
     }
+
+    // Modo dry-run: validar sin emitir
+    if (body.dryRun === true) {
+      try {
+        const resultado = await validarDocumento(request.tenant.id, body, 'erp')
+        return reply.status(resultado.valido ? 200 : 422).send(resultado)
+      } catch (err) {
+        request.log.error(err)
+        return reply.status(500).send({ error: 'Error validando documento', mensaje: err.message })
+      }
+    }
+
     try {
       const resultado = await procesarDocumentoERP(request.tenant.id, body)
       return reply.status(resultado.ok ? 201 : 422).send({ ok: resultado.ok, data: resultado })
