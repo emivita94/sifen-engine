@@ -225,3 +225,10 @@ CREATE TABLE IF NOT EXISTS webhook_logs (
 
 CREATE INDEX idx_webhook_logs_doc  ON webhook_logs(documento_id);
 CREATE INDEX idx_webhook_logs_evt  ON webhook_logs(evento, exitoso);
+
+-- =============================================
+-- MIGRACIONES
+-- =============================================
+
+-- Webhook HMAC-SHA256: secret por tenant para firmar webhooks
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS webhook_secret VARCHAR(128);

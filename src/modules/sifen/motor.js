@@ -51,7 +51,8 @@ export async function procesarDocumento(tenantId, payload) {
            nombre_fantasia,
            smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
            smtp_from, smtp_from_name,
-           email_asunto, email_cuerpo, email_info_adicional, email_firma
+           email_asunto, email_cuerpo, email_info_adicional, email_firma,
+           webhook_secret
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
@@ -329,7 +330,7 @@ export async function procesarDocumento(tenantId, payload) {
     )
   `
 
-  dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado').catch(() => {})
+  dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado', tenant.webhookSecret).catch(() => {})
   if (sifen.aprobado) enviarEmailDocumento(docFinal, tenant).catch(() => {})
   return respuestaDE(docFinal)
 }
@@ -346,7 +347,7 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
   // ── 2. Tenant + certificado ─────────────────────────────────────────────────
   const [tenant] = await sql`
     SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_password,
-           csc, id_csc
+           csc, id_csc, webhook_secret
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado')
@@ -464,7 +465,7 @@ export async function cancelarDocumento(tenantId, cdc, motivo = 'Cancelación so
     RETURNING *
   `
 
-  dispararWebhook(docCancelado, 'de.cancelado').catch(() => {})
+  dispararWebhook(docCancelado, 'de.cancelado', tenant.webhookSecret).catch(() => {})
   return respuestaDE(docCancelado)
 }
 
@@ -626,7 +627,8 @@ export async function procesarDocumentoERP(tenantId, erpPayload) {
            nombre_fantasia,
            smtp_host, smtp_port, smtp_ssl, smtp_user, smtp_pass,
            smtp_from, smtp_from_name,
-           email_asunto, email_cuerpo, email_info_adicional, email_firma
+           email_asunto, email_cuerpo, email_info_adicional, email_firma,
+           webhook_secret
     FROM tenants WHERE id = ${tenantId} AND activo = true
   `
   if (!tenant)                return respuestaError('Tenant no encontrado o inactivo')
@@ -884,7 +886,7 @@ export async function procesarDocumentoERP(tenantId, erpPayload) {
     )
   `
 
-  dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado').catch(() => {})
+  dispararWebhook(docFinal, sifen.aprobado ? 'de.aprobado' : 'de.rechazado', tenant.webhookSecret).catch(() => {})
   if (sifen.aprobado) enviarEmailDocumento(docFinal, tenant).catch(() => {})
   return respuestaDE(docFinal)
 }
@@ -1023,6 +1025,302 @@ async function consultarLote(numeroLote, env, certPath, certPassword, maxIntento
   }
   return { aprobado: false, codigo: 'TIMEOUT', mensaje: 'La SET no respondio a tiempo' }
 }
+// ── Validar documento (dry-run, sin firmar ni enviar) ─────────────────────────
+// Ejecuta los pasos 1-6 del flujo: valida tenant, timbrado, receptor, items
+// y genera el XML de prueba. NO incrementa numeración, NO firma, NO envía a SIFEN.
+export async function validarDocumento(tenantId, payload, formato = 'estandar') {
+  await cargarLibrerias()
+  const sql = getDb()
+  const errores = []
+
+  // ── 1. Tenant ───────────────────────────────────────────────────────────────
+  const [tenant] = await sql`
+    SELECT id, ruc, razon_social, ambiente, certificado_enc, cert_alias,
+           codigo_seguridad, cert_password,
+           direccion, numero_casa, departamento, departamento_desc,
+           distrito, distrito_desc, ciudad, ciudad_desc,
+           telefono, email, denominacion, csc, id_csc,
+           actividades_economicas, tipo_contribuyente, tipo_regimen,
+           nombre_fantasia
+    FROM tenants WHERE id = ${tenantId} AND activo = true
+  `
+  if (!tenant)                errores.push({ campo: 'tenant',      mensaje: 'Tenant no encontrado o inactivo' })
+  if (tenant && !tenant.certificadoEnc) errores.push({ campo: 'certificado', mensaje: 'El tenant no tiene certificado digital cargado' })
+  if (tenant && !tenant.csc)            errores.push({ campo: 'csc',         mensaje: 'El tenant no tiene CSC configurado' })
+  if (tenant && !tenant.direccion)      errores.push({ campo: 'direccion',   mensaje: 'El tenant no tiene dirección configurada' })
+
+  // Si el tenant no existe, no podemos seguir
+  if (!tenant) {
+    return { ok: false, valido: false, errores }
+  }
+
+  // ── 2. Timbrado activo ──────────────────────────────────────────────────────
+  const tipoDoc = Number(payload.tipoDocumento) || 1
+  const [timbrado] = await sql`
+    SELECT t.*, e.codigo AS est_codigo, e.direccion AS est_direccion,
+           e.ciudad_codigo, e.ciudad_nombre, e.departamento_codigo,
+           p.codigo AS punto_codigo
+    FROM timbrados t
+    JOIN establecimientos e ON e.id = t.establecimiento_id
+    JOIN puntos_expedicion p ON p.id = t.punto_id
+    WHERE t.tenant_id = ${tenantId}
+      AND t.tipo_documento = ${tipoDoc}
+      AND t.activo = true
+      AND t.vigencia_desde <= CURRENT_DATE
+      AND t.vigencia_hasta >= CURRENT_DATE
+      AND t.numero_actual <= t.numero_max
+    ORDER BY t.vigencia_hasta DESC LIMIT 1
+  `
+  if (!timbrado) {
+    errores.push({ campo: 'timbrado', mensaje: `Sin timbrado activo para tipo de documento ${tipoDoc}` })
+  }
+
+  // ── 3. Validar receptor / cliente ───────────────────────────────────────────
+  if (formato === 'erp') {
+    if (!payload.cliente) {
+      errores.push({ campo: 'cliente', mensaje: 'Falta el objeto cliente' })
+    } else {
+      const c = payload.cliente
+      if (c.contribuyente && !c.ruc) errores.push({ campo: 'cliente.ruc', mensaje: 'Cliente contribuyente requiere RUC' })
+      if (!c.razonSocial)            errores.push({ campo: 'cliente.razonSocial', mensaje: 'Falta razón social del cliente' })
+    }
+  } else {
+    if (!payload.receptor) {
+      errores.push({ campo: 'receptor', mensaje: 'Falta el objeto receptor' })
+    } else {
+      const r = payload.receptor
+      if (r.tipo === 1 && !r.documento) errores.push({ campo: 'receptor.documento', mensaje: 'Receptor contribuyente requiere documento (RUC)' })
+      if (r.tipo === 1 && r.documento && !r.documento.includes('-')) errores.push({ campo: 'receptor.documento', mensaje: 'RUC debe incluir dígito verificador (ej: 80000001-1)' })
+    }
+  }
+
+  // ── 4. Validar items ────────────────────────────────────────────────────────
+  const items = payload.items
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    errores.push({ campo: 'items', mensaje: 'Se requiere al menos un item' })
+  } else {
+    items.forEach((item, idx) => {
+      if (!item.descripcion)                       errores.push({ campo: `items[${idx}].descripcion`,    mensaje: 'Falta descripción' })
+      if (!item.cantidad || item.cantidad <= 0)    errores.push({ campo: `items[${idx}].cantidad`,       mensaje: 'Cantidad debe ser mayor a 0' })
+      if (!item.precioUnitario && item.precioUnitario !== 0) errores.push({ campo: `items[${idx}].precioUnitario`, mensaje: 'Falta precio unitario' })
+      const iva = formato === 'erp' ? item.iva : item.tasaIVA
+      if (iva === undefined || ![0, 5, 10].includes(Number(iva))) {
+        errores.push({ campo: `items[${idx}].${formato === 'erp' ? 'iva' : 'tasaIVA'}`, mensaje: 'Tasa IVA debe ser 0, 5 o 10' })
+      }
+    })
+  }
+
+  // ── 5. Validar campos según tipo de documento ──────────────────────────────
+  if (tipoDoc === 5 || tipoDoc === 6) {
+    if (formato === 'erp') {
+      if (!payload.documentoAsociado?.cdc && !payload.documentoAsociado?.timbrado) {
+        errores.push({ campo: 'documentoAsociado', mensaje: 'Nota de crédito/débito requiere documento asociado (CDC o timbrado)' })
+      }
+    } else {
+      if (!payload.cdcDocumentoAsociado) {
+        errores.push({ campo: 'cdcDocumentoAsociado', mensaje: 'Nota de crédito/débito requiere CDC del documento asociado' })
+      }
+    }
+  }
+
+  // Si hay errores de estructura, retornar sin intentar generar XML
+  if (errores.length > 0) {
+    return { ok: false, valido: false, errores }
+  }
+
+  // ── 6. Intentar generar XML (dry-run) ───────────────────────────────────────
+  // Usa número ficticio para no consumir secuencia
+  const estCodigo   = timbrado.estCodigo.toString().padStart(3, '0')
+  const puntoCodigo = timbrado.puntoCodigo.toString().padStart(3, '0')
+  const fechaEmision = payload.fecha ? new Date(payload.fecha) : ahoraParaguay()
+  const codigoSeguridad = '999999999'  // ficticio
+
+  const timbradoFecha = timbrado.vigenciaDesde instanceof Date
+    ? timbrado.vigenciaDesde.toISOString().split('T')[0]
+    : String(timbrado.vigenciaDesde).split('T')[0]
+
+  const actividadesEconomicas = Array.isArray(tenant.actividadesEconomicas) && tenant.actividadesEconomicas.length > 0
+    ? tenant.actividadesEconomicas
+    : [{ codigo: '00000', descripcion: 'SIN ACTIVIDAD CONFIGURADA' }]
+
+  const params = {
+    version:               150,
+    ruc:                   tenant.ruc,
+    razonSocial:           tenant.razonSocial,
+    nombreFantasia:        tenant.nombreFantasia || tenant.razonSocial,
+    actividadesEconomicas,
+    timbradoNumero:        timbrado.numeroTimbrado,
+    timbradoFecha,
+    tipoContribuyente:     tenant.tipoContribuyente || 2,
+    tipoRegimen:           tenant.tipoRegimen       || 8,
+    establecimientos: [{
+      codigo:                  estCodigo,
+      direccion:               tenant.direccion        || '',
+      numeroCasa:              tenant.numeroCasa       || '0',
+      departamento:            tenant.departamento     || 1,
+      departamentoDescripcion: tenant.departamentoDesc || 'CAPITAL',
+      distrito:                tenant.distrito         || 1,
+      distritoDescripcion:     tenant.distritoDesc     || 'ASUNCION (DISTRITO)',
+      ciudad:                  tenant.ciudad           || 1,
+      ciudadDescripcion:       tenant.ciudadDesc       || 'ASUNCION (DISTRITO)',
+      telefono:                tenant.telefono         || '',
+      email:                   tenant.email            || '',
+      denominacion:            tenant.denominacion     || '',
+    }],
+  }
+
+  // Construir data según formato
+  let clienteData, itemsData
+  if (formato === 'erp') {
+    clienteData = { ...payload.cliente }
+    if (clienteData.contribuyente && clienteData.ruc?.includes('-')) {
+      const [rucParte, dvParte] = clienteData.ruc.split('-')
+      clienteData.ruc = rucParte
+      clienteData.dv  = dvParte
+    }
+    if (!clienteData.paisDescripcion) clienteData.paisDescripcion = 'Paraguay'
+    if (!clienteData.pais)            clienteData.pais            = 'PRY'
+
+    itemsData = items.map((item, idx) => ({
+      codigo: item.codigo || String(idx + 1).padStart(3, '0'),
+      descripcion: item.descripcion, observacion: item.observacion || '',
+      unidadMedida: item.unidadMedida || 77, cantidad: Number(item.cantidad),
+      precioUnitario: Number(item.precioUnitario), cambio: 0,
+      descuento: 0, anticipo: 0, porcDescuento: 0,
+      descuentoGlobalItem: 0, anticipoGlobalItem: 0,
+      ivaTipo: item.ivaTipo || 1, ivaBase: item.ivaBase || 100, iva: Number(item.iva),
+      lote: '', vencimiento: '', numeroSerie: '',
+      numeroPedido: '', numeroSeguimiento: '',
+      importacion: {}, dncp: {},
+      pais: 'PRY', paisDescripcion: 'Paraguay',
+      tolerancia: 0, toleranciaCantidad: 0, toleranciaPorcentaje: 0, cdcAnticipo: '',
+    }))
+  } else {
+    const receptor = payload.receptor || {}
+    const esContribuyente = receptor.tipo === 1
+    const esInnominado    = receptor.tipo === 4 || !receptor.tipo
+
+    if (esInnominado) {
+      clienteData = {
+        contribuyente: false, documentoTipo: 5, documentoNumero: '0',
+        razonSocial: receptor.razonSocial || 'Sin Nombre',
+        pais: 'PRY', paisDescripcion: 'Paraguay',
+        tipoContribuyente: 2, tipoOperacion: 2, email: receptor.email || '',
+      }
+    } else if (esContribuyente) {
+      const [rucRec, dvRec] = (receptor.documento || '').split('-')
+      clienteData = {
+        contribuyente: true, ruc: rucRec, dv: dvRec || '0',
+        razonSocial: receptor.razonSocial || 'Sin Nombre',
+        pais: 'PRY', paisDescripcion: 'Paraguay',
+        tipoContribuyente: 2, tipoOperacion: 1, email: receptor.email || '', numeroCasa: '0',
+      }
+    } else {
+      clienteData = {
+        contribuyente: false,
+        documentoTipo: receptor.tipo === 2 ? 1 : 2,
+        documentoNumero: receptor.documento || '0',
+        razonSocial: receptor.razonSocial || 'Sin Nombre',
+        pais: 'PRY', paisDescripcion: 'Paraguay',
+        tipoContribuyente: 2, tipoOperacion: 2, email: receptor.email || '',
+      }
+    }
+
+    itemsData = items.map((item, idx) => ({
+      codigo: String(idx + 1).padStart(3, '0'),
+      descripcion: item.descripcion,
+      unidadMedida: 77, cantidad: item.cantidad,
+      precioUnitario: item.precioUnitario, cambio: 0,
+      descuento: 0, anticipo: 0, porcDescuento: 0,
+      descuentoGlobalItem: 0, anticipoGlobalItem: 0,
+      ivaTipo: 1, ivaBase: 100, iva: item.tasaIVA,
+      lote: '', vencimiento: '', numeroSerie: '',
+      numeroPedido: '', numeroSeguimiento: '',
+      importacion: {}, dncp: {},
+      pais: 'PRY', paisDescripcion: 'Paraguay',
+      tolerancia: 0, toleranciaCantidad: 0, toleranciaPorcentaje: 0, cdcAnticipo: '',
+    }))
+  }
+
+  // Calcular montos
+  let montoTotal
+  if (formato === 'erp') {
+    montoTotal = items.reduce((s, i) => s + Number(i.precioUnitario) * Number(i.cantidad), 0)
+  } else {
+    montoTotal = calcularMontoTotal(payload)
+  }
+
+  const condicion = (formato === 'erp' && payload.condicion) ? payload.condicion : {
+    tipo: 1,
+    entregas: [{ tipo: 1, monto: String(montoTotal), moneda: payload.moneda || 'PYG', cambio: 0 }],
+  }
+
+  const data = {
+    tipoDocumento:            tipoDoc,
+    establecimiento:          estCodigo,
+    punto:                    puntoCodigo,
+    numero:                   '0000000',  // ficticio — no consume secuencia
+    codigoSeguridadAleatorio: codigoSeguridad,
+    descripcion:              payload.descripcion || '',
+    observacion:              payload.observacion || '',
+    fecha:                    fechaEmision.toISOString().substring(0, 19),
+    tipoEmision:              1,
+    tipoTransaccion:          Number(payload.tipoTransaccion) || 1,
+    tipoImpuesto:             Number(payload.tipoImpuesto)    || 1,
+    moneda:                   payload.moneda || 'PYG',
+    descuentoGlobal:          0,
+    anticipoGlobal:           0,
+    cambio:                   0,
+    cliente:                  clienteData,
+    condicion,
+    items:                    itemsData,
+  }
+
+  if (tipoDoc === 1 || tipoDoc === 2 || tipoDoc === 3 || tipoDoc === 4) {
+    data.factura = (formato === 'erp' && payload.factura) ? payload.factura : { presencia: 1 }
+  }
+  if (tipoDoc === 5 || tipoDoc === 6) {
+    data.notaCreditoDebito = { motivo: Number(formato === 'erp' ? payload.notaCreditoDebito?.motivo : payload.motivo) || 1 }
+    const cdcAsoc = formato === 'erp' ? payload.documentoAsociado?.cdc : payload.cdcDocumentoAsociado
+    if (cdcAsoc) {
+      data.documentoAsociado = formato === 'erp'
+        ? { formato: Number(payload.documentoAsociado.formato) || 1, cdc: cdcAsoc, timbrado: payload.documentoAsociado.timbrado, establecimiento: payload.documentoAsociado.establecimiento, punto: payload.documentoAsociado.punto, numero: payload.documentoAsociado.numero, fecha: payload.documentoAsociado.fecha }
+        : { formato: 1, cdc: cdcAsoc }
+    }
+  }
+  if (tipoDoc === 7) {
+    data.remision = (formato === 'erp' && payload.remision) ? payload.remision : { motivo: payload.motivoRemision || 1, tipoResponsable: payload.tipoResponsable || 1 }
+  }
+
+  try {
+    await _xmlgen.generateXMLDE(params, data, { version: 150 })
+  } catch (err) {
+    return {
+      ok: false,
+      valido: false,
+      errores: [{ campo: 'xml', mensaje: 'Error generando XML: ' + err.message }],
+    }
+  }
+
+  // ── Todo ok ─────────────────────────────────────────────────────────────────
+  return {
+    ok:     true,
+    valido: true,
+    errores: [],
+    resumen: {
+      tipoDocumento:  tipoDoc,
+      timbrado:       timbrado.numeroTimbrado,
+      establecimiento: estCodigo,
+      punto:          puntoCodigo,
+      ambiente:       tenant.ambiente,
+      montoTotal,
+      receptor:       formato === 'erp'
+        ? { documento: payload.cliente?.ruc || payload.cliente?.documentoNumero, razonSocial: payload.cliente?.razonSocial }
+        : { documento: payload.receptor?.documento, razonSocial: payload.receptor?.razonSocial },
+    },
+  }
+}
+
 // ── Cálculos ──────────────────────────────────────────────────────────────────
 const sum = (items, fn) => items.reduce((s, i) => s + (fn(i) || 0), 0)
 function calcularMontoTotal(p) { return p.montoTotal  ?? sum(p.items || [], i => i.precioTotal) }

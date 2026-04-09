@@ -8,6 +8,7 @@
 // independientemente del estado — el ERP solo tiene que
 // escuchar en un endpoint y actualizar su BD.
 
+import { createHmac } from 'node:crypto'
 import { getDb } from '../../db/connection.js'
 
 // ── Payload estándar que recibe el ERP ────────────────────────────────────────
@@ -47,14 +48,15 @@ const DELAYS_MS = [10_000, 30_000, 120_000, 600_000, 3_600_000]
  *
  * @param {Object} doc  - Registro completo de la tabla documentos
  * @param {string} evento - "de.aprobado" | "de.rechazado" | "de.cancelado" | "de.inutilizado"
+ * @param {string|null} webhookSecret - Secret HMAC del tenant (si está configurado)
  */
-export async function dispararWebhook(doc, evento) {
+export async function dispararWebhook(doc, evento, webhookSecret = null) {
   if (!doc.webhookUrl) return   // el ERP no registró URL → skip silencioso
 
   const payload = construirPayload(doc, evento)
 
   // Intento 1 inmediato (en background, no bloquea la respuesta al ERP)
-  enviarConReintentos(doc.id, doc.webhookUrl, payload, 0).catch(() => {})
+  enviarConReintentos(doc.id, doc.webhookUrl, payload, 0, webhookSecret).catch(() => {})
 }
 
 /**
@@ -93,23 +95,50 @@ function construirPayload(doc, evento) {
 }
 
 /**
+ * Genera los headers de firma HMAC-SHA256 para el webhook.
+ * El ERP puede verificar la autenticidad del webhook usando:
+ *   expected = 'sha256=' + HMAC-SHA256(`${timestamp}.${body}`, secret)
+ *
+ * @param {string} body   - JSON stringificado del payload
+ * @param {string} secret - Webhook secret del tenant
+ * @returns {{ 'X-Webhook-Signature': string, 'X-Webhook-Timestamp': string }}
+ */
+function generarHeadersFirma(body, secret) {
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const mensaje   = `${timestamp}.${body}`
+  const firma     = createHmac('sha256', secret).update(mensaje).digest('hex')
+
+  return {
+    'X-Webhook-Signature': `sha256=${firma}`,
+    'X-Webhook-Timestamp': timestamp,
+  }
+}
+
+/**
  * Envía el webhook con reintentos y backoff exponencial.
  * Si todos los intentos fallan, registra en BD para revisión manual.
  */
-async function enviarConReintentos(docId, url, payload, intento) {
+async function enviarConReintentos(docId, url, payload, intento, webhookSecret = null) {
   const inicio = Date.now()
+  const body   = JSON.stringify(payload)
 
   try {
+    // Headers base
+    const headers = {
+      'Content-Type':    'application/json',
+      'X-Nodo-Evento':   payload.evento,
+      'X-Nodo-Entrega':  String(intento + 1),
+    }
+
+    // Si hay secret configurado, agregar firma HMAC-SHA256
+    if (webhookSecret) {
+      Object.assign(headers, generarHeadersFirma(body, webhookSecret))
+    }
+
     const res = await fetch(url, {
       method:  'POST',
-      headers: {
-        'Content-Type':    'application/json',
-        'X-Nodo-Evento':   payload.evento,
-        'X-Nodo-Entrega':  String(intento + 1),
-        // Firma HMAC opcional (para que el ERP verifique que viene de NODO)
-        // 'X-Nodo-Firma': generarFirmaHMAC(payload),
-      },
-      body:    JSON.stringify(payload),
+      headers,
+      body,
       signal:  AbortSignal.timeout(10_000),   // timeout 10s por intento
     })
 
@@ -124,7 +153,7 @@ async function enviarConReintentos(docId, url, payload, intento) {
       // Programar próximo reintento
       const delay = DELAYS_MS[intento] ?? DELAYS_MS.at(-1)
       setTimeout(() => {
-        enviarConReintentos(docId, url, payload, intento + 1).catch(() => {})
+        enviarConReintentos(docId, url, payload, intento + 1, webhookSecret).catch(() => {})
       }, delay)
     }
 
@@ -137,7 +166,7 @@ async function enviarConReintentos(docId, url, payload, intento) {
     if (intento < REINTENTOS_MAX - 1) {
       const delay = DELAYS_MS[intento] ?? DELAYS_MS.at(-1)
       setTimeout(() => {
-        enviarConReintentos(docId, url, payload, intento + 1).catch(() => {})
+        enviarConReintentos(docId, url, payload, intento + 1, webhookSecret).catch(() => {})
       }, delay)
     }
   }

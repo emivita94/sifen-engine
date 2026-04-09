@@ -8,6 +8,7 @@ import { config } from './config/index.js'
 import { authPlugin } from './shared/auth/plugin.js'
 import { documentosRoutes } from './modules/documentos/routes.js'
 import { tenantsRoutes } from './modules/tenants/routes.js'
+import { tenantHealthRoute } from './modules/tenants/health.js'
 import { getDb, closeDb } from './db/connection.js'
 
 const fastify = Fastify({
@@ -29,6 +30,7 @@ await fastify.register(cors, {
   ],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset', 'Retry-After'],
   credentials: true,
 })
 
@@ -37,6 +39,12 @@ await fastify.register(rateLimit, {
   max: config.rateLimit.max,
   timeWindow: config.rateLimit.windowMs,
   keyGenerator: (request) => request.tenant?.id || request.ip,
+  addHeaders: {
+    'x-ratelimit-limit':     true,
+    'x-ratelimit-remaining': true,
+    'x-ratelimit-reset':     true,
+    'retry-after':           true,
+  },
   errorResponseBuilder: () => ({
     error: 'Rate limit excedido',
     mensaje: `Máximo ${config.rateLimit.max} requests por minuto`
@@ -61,6 +69,7 @@ await fastify.register(async (protectedApp) => {
   await protectedApp.register(authPlugin)
 
   // Rutas que requieren autenticación
+  await protectedApp.register(tenantHealthRoute, { prefix: '/api/v1/tenants' })
   await protectedApp.register(documentosRoutes, { prefix: '/api/v1/documentos' })
 })
 

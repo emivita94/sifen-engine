@@ -18,8 +18,12 @@ export async function authPlugin(fastify) {
       '/api/v1/tenants',
     ]
 
-    // Si la ruta empieza con alguna pública, skip
-    if (PUBLICAS.some(p => request.url === p || request.url.startsWith(p + '/') || request.url.startsWith(p + '?'))) {
+    // Excepciones: rutas bajo prefijos públicos que SÍ requieren auth
+    const urlPath = request.url.split('?')[0]
+    const requiereAuth = /\/api\/v1\/tenants\/[^/]+\/health$/.test(urlPath)
+
+    // Si la ruta empieza con alguna pública (y no es una excepción protegida), skip
+    if (!requiereAuth && PUBLICAS.some(p => request.url === p || request.url.startsWith(p + '/') || request.url.startsWith(p + '?'))) {
       return
     }
 

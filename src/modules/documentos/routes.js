@@ -1,5 +1,5 @@
 // src/modules/documentos/routes.js
-import { procesarDocumento, cancelarDocumento, inutilizarDocumentos, procesarDocumentoERP } from '../sifen/motor.js'
+import { procesarDocumento, cancelarDocumento, inutilizarDocumentos, procesarDocumentoERP, validarDocumento } from '../sifen/motor.js'
 import { getDb } from '../../db/connection.js'
 import { generarKude } from '../sifen/kude.js'
 import { hashApiKey } from '../../shared/crypto/index.js'
@@ -120,6 +120,51 @@ export async function documentosRoutes(fastify) {
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send({ error: 'Error procesando documento ERP', mensaje: err.message })
+    }
+  })
+
+  // ─── POST /documentos/validar ──────────────────────────────────────────────
+  // Dry-run: valida el payload completo sin emitir, firmar ni enviar a SIFEN.
+  // Acepta ambos formatos (estándar y ERP).
+  fastify.post('/validar', async (request, reply) => {
+    const body = request.body
+    if (!body) {
+      return reply.status(400).send({ error: 'Body vacío' })
+    }
+
+    // Detectar formato: si tiene "cliente" es formato ERP, si tiene "receptor" es estándar
+    const esERP = !!body.cliente
+    const formato = esERP ? 'erp' : 'estandar'
+
+    // Validación Zod solo para formato estándar
+    if (!esERP) {
+      const parse = emitirSchema.safeParse(body)
+      if (!parse.success) {
+        return reply.status(400).send({
+          ok: false,
+          valido: false,
+          errores: parse.error.issues.map(issue => ({
+            campo:   issue.path.join('.'),
+            mensaje: issue.message,
+          })),
+        })
+      }
+    } else {
+      if (!body.items || !body.cliente) {
+        return reply.status(400).send({
+          ok: false,
+          valido: false,
+          errores: [{ campo: 'body', mensaje: 'Formato ERP requiere campos: tipoDocumento, items, cliente' }],
+        })
+      }
+    }
+
+    try {
+      const resultado = await validarDocumento(request.tenant.id, body, formato)
+      return reply.status(resultado.valido ? 200 : 422).send(resultado)
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send({ error: 'Error validando documento', mensaje: err.message })
     }
   })
 
